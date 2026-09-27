@@ -84,8 +84,8 @@ const SHORTCUTS: &[ShortcutConfig] = &[
     ShortcutConfig {
         id: "win11-clipboard-history",
         name: "Clipboard History",
-        command: "win11-clipboard-history", // Will be replaced at runtime
-        args: "",
+        command: "spawn-at -o -15 -15 -b win11-clipboard-history", 
+        args: "--clipboard",
         gnome_binding: "<Super>v",
         kde_binding: "Meta+V",
         xfce_binding: "<Super>v",
@@ -99,8 +99,8 @@ const SHORTCUTS: &[ShortcutConfig] = &[
     ShortcutConfig {
         id: "win11-clipboard-history-alt",
         name: "Clipboard History (Alt)",
-        command: "win11-clipboard-history", // Will be replaced at runtime
-        args: "",
+        command: "spawn-at -o -15 -15 -b win11-clipboard-history", 
+        args: "--clipboard",
         gnome_binding: "<Ctrl><Alt>v",
         kde_binding: "Ctrl+Alt+V",
         xfce_binding: "<Primary><Alt>v",
@@ -114,7 +114,7 @@ const SHORTCUTS: &[ShortcutConfig] = &[
     ShortcutConfig {
         id: "win11-clipboard-history-emoji",
         name: "Emoji Picker",
-        command: "win11-clipboard-history", // Will be replaced at runtime
+        command: "spawn-at -o -15 -15 -b win11-clipboard-history", 
         args: "--emoji",
         gnome_binding: "<Super>period",
         kde_binding: "Meta+.",
@@ -179,11 +179,19 @@ pub fn register_global_shortcut() {
     for shortcut in SHORTCUTS {
         // Create a new config with the correct command path
         let mut config = shortcut.clone();
-        config.command = command_path;
+        // Overwrite the base executable name but keep the spawn-at wrapper
+        let replaced_cmd = config.command.replace("win11-clipboard-history", command_path);
+        config.command = Box::leak(replaced_cmd.into_boxed_str());
 
         match handler.register(&config) {
             Ok(_) => println!("[ShortcutManager] \u{2713} Registered '{}'", config.name),
             Err(e) => eprintln!("[ShortcutManager] \u{2717} Failed '{}': {}", config.name, e),
+        }
+
+        // Add a delay to prevent gsettings async race conditions where reading the 
+        // custom-keybindings array too quickly returns stale data, overwriting previous additions.
+        if handler.name().contains("GNOME") || handler.name().contains("Cinnamon") {
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }
     }
 }
@@ -197,11 +205,18 @@ pub fn unregister_global_shortcut() {
     for shortcut in SHORTCUTS {
         // Create a new config with the correct command path
         let mut config = shortcut.clone();
-        config.command = command_path;
+        let replaced_cmd = config.command.replace("win11-clipboard-history", command_path);
+        config.command = Box::leak(replaced_cmd.into_boxed_str());
 
         match handler.unregister(&config) {
             Ok(_) => println!("[ShortcutManager] \u{2713} Unregistered '{}'", config.name),
             Err(e) => eprintln!("[ShortcutManager] \u{2717} Failed '{}': {}", config.name, e),
+        }
+
+        // Add a delay to prevent gsettings async race conditions where reading the 
+        // custom-keybindings array too quickly returns stale data, overwriting previous removals.
+        if handler.name().contains("GNOME") || handler.name().contains("Cinnamon") {
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }
     }
 }
@@ -472,32 +487,98 @@ impl GSettings {
             return Err(ShortcutError::DependencyMissing("gsettings".into()));
         }
 
-        let path = format!("{}/{}/", self.path_prefix, shortcut.id);
-        let schema_path = format!("{}:{}", self.binding_schema, path);
+        let mut list = self.get_list()?;
+        
+        let expected_path = format!("{}/{}/", self.path_prefix, shortcut.id);
+        let mut target_path = expected_path.clone();
+        let mut found_existing = false;
+        let mut stale_paths = Vec::new();
+        let mut needs_rewrite = true;
+
         let full_cmd = shortcut.full_command();
 
-        // Idempotent setting
-        Utils::run("gsettings", &["set", &schema_path, "name", shortcut.name])?;
-        Utils::run("gsettings", &["set", &schema_path, "command", &full_cmd])?;
+        for item in &list {
+            let item_path = if self.path_prefix.contains("cinnamon") {
+                format!("{}/{}/", self.path_prefix, item)
+            } else {
+                item.clone()
+            };
+            
+            let item_schema_path = format!("{}:{}", self.binding_schema, item_path);
+            let name = Utils::run("gsettings", &["get", &item_schema_path, "name"]).unwrap_or_default();
+            let command = Utils::run("gsettings", &["get", &item_schema_path, "command"]).unwrap_or_default();
+            let binding = Utils::run("gsettings", &["get", &item_schema_path, "binding"]).unwrap_or_default();
+            
+            let name_clean = name.trim_matches('\'').trim_matches('"');
+            let command_clean = command.trim_matches('\'').trim_matches('"');
+            let binding_clean = binding.trim_matches('\'').trim_matches('"').trim_start_matches('[').trim_end_matches(']').trim_matches('\'').trim_matches('"');
+            
+            // Strictly match THIS specific shortcut by checking its ID path or exact exact name
+            let is_this_shortcut = item_path == expected_path || name_clean == shortcut.name;
 
-        let binding_val = if use_array_for_binding {
-            format!("['{}']", shortcut.gnome_binding)
-        } else {
-            format!("'{}'", shortcut.gnome_binding)
-        };
-        Utils::run("gsettings", &["set", &schema_path, "binding", &binding_val])?;
-
-        let mut list = self.get_list()?;
-        let entry_check = if self.path_prefix.contains("cinnamon") {
-            shortcut.id
-        } else {
-            &path
-        };
-
-        if !list.iter().any(|x| x.contains(entry_check)) {
-            list.push(entry_check.to_string());
-            self.set_list(&list)?;
+            if is_this_shortcut {
+                if !found_existing {
+                    target_path = item_path.clone();
+                    found_existing = true;
+                    
+                    // If the existing shortcut already has the correct command, skip rewriting it
+                    // This preserves any custom bindings the user might have set manually
+                    // and avoids dconf race conditions when re-registering
+                    if command_clean == full_cmd && name_clean == shortcut.name {
+                        if binding_clean == shortcut.gnome_binding || !binding_clean.is_empty() {
+                            needs_rewrite = false;
+                        }
+                    }
+                } else {
+                    // Only push to stale_paths if it's a duplicate of THIS exact shortcut
+                    stale_paths.push(item.clone());
+                }
+            }
         }
+
+        let schema_path = format!("{}:{}", self.binding_schema, target_path);
+
+        if needs_rewrite {
+            let full_cmd_val = format!("'{}'", full_cmd);
+            let name_val = format!("'{}'", shortcut.name);
+
+            Utils::run("gsettings", &["set", &schema_path, "name", &name_val])?;
+            Utils::run("gsettings", &["set", &schema_path, "command", &full_cmd_val])?;
+
+            let binding_val = if use_array_for_binding {
+                format!("['{}']", shortcut.gnome_binding)
+            } else {
+                format!("'{}'", shortcut.gnome_binding)
+            };
+            Utils::run("gsettings", &["set", &schema_path, "binding", &binding_val])?;
+        }
+
+        let entry_check = if self.path_prefix.contains("cinnamon") {
+            target_path.split('/').filter(|s| !s.is_empty()).last().unwrap_or("").to_string()
+        } else {
+            target_path.clone()
+        };
+
+        if !list.contains(&entry_check) {
+            list.push(entry_check);
+        }
+
+        if !stale_paths.is_empty() {
+            for stale in &stale_paths {
+                list.retain(|x| x != stale);
+                let stale_path = if self.path_prefix.contains("cinnamon") {
+                    format!("{}/{}/", self.path_prefix, stale)
+                } else {
+                    stale.clone()
+                };
+                let stale_schema_path = format!("{}:{}", self.binding_schema, stale_path);
+                let _ = Utils::run("gsettings", &["reset", &stale_schema_path, "name"]);
+                let _ = Utils::run("gsettings", &["reset", &stale_schema_path, "command"]);
+                let _ = Utils::run("gsettings", &["reset", &stale_schema_path, "binding"]);
+            }
+        }
+
+        self.set_list(&list)?;
         Ok(())
     }
 
@@ -762,13 +843,15 @@ impl ShortcutHandler for MateHandler {
 
             if current.is_empty() {
                 let binding_key = format!("run-command-{}", i);
+                let quoted_cmd = format!("'{}'", full_cmd);
+                let quoted_binding = format!("'{}'", s.gnome_binding);
                 Utils::run(
                     "gsettings",
                     &[
                         "set",
                         "org.mate.Marco.keybinding-commands",
                         &cmd_key,
-                        &full_cmd,
+                        &quoted_cmd,
                     ],
                 )?;
                 Utils::run(
@@ -777,7 +860,7 @@ impl ShortcutHandler for MateHandler {
                         "set",
                         "org.mate.Marco.global-keybindings",
                         &binding_key,
-                        s.gnome_binding,
+                        &quoted_binding,
                     ],
                 )?;
                 return Ok(());

@@ -502,6 +502,29 @@ impl WindowController {
                         }
                     }
                 });
+
+                tauri::async_runtime::spawn(async move {
+                    for _ in 0..5 {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                        if std::process::Command::new("gdbus")
+                            .args([
+                                "call",
+                                "--session",
+                                "--dest",
+                                "org.gnome.Shell",
+                                "--object-path",
+                                "/org/gnome/Shell/Extensions/Windows",
+                                "--method",
+                                "org.gnome.Shell.Extensions.Windows.Focus",
+                                "\"win11-clipboard-history\"",
+                            ])
+                            .output()
+                            .is_ok_and(|out| out.status.success())
+                        {
+                            break;
+                        }
+                    }
+                });
             }
         } else {
             let _ = window.show();
@@ -527,14 +550,16 @@ impl WindowController {
                 // On Wayland, skip window.set_focus() to avoid Mutter Focus Stealing Prevention toast.
                 // Use window-calls MakeAbove — retry up to 15 times with 40ms intervals
                 // until Mutter registers the newly created/mapped surface.
-                if always_on_top {
-                    for _ in 0..15 {
-                        std::thread::sleep(std::time::Duration::from_millis(40));
-                        if let Ok(cb_id) = wayland_get_clipboard_window_id() {
+                for _ in 0..15 {
+                    std::thread::sleep(std::time::Duration::from_millis(40));
+                    if let Ok(cb_id) = wayland_get_clipboard_window_id() {
+                        if always_on_top {
                             let _ = wayland_set_keep_above(cb_id, true);
                             let _ = gnome_extension_force_pin();
-                            break;
                         }
+                        // Steal focus explicitly via window-calls
+                        let _ = win11_clipboard_history_lib::focus_manager::wayland_activate_window_id(cb_id);
+                        break;
                     }
                 }
             } else {

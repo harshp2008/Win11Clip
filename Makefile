@@ -265,6 +265,8 @@ install: install-extension enable-extension
 	install -Dm755 src-tauri/target/release/$(APP_NAME)-bin $(DESTDIR)$(LIBDIR)/$(APP_NAME)/$(APP_NAME)-bin
 	@# Install wrapper script to bin
 	install -Dm755 src-tauri/bundle/linux/wrapper.sh $(DESTDIR)$(BINDIR)/$(APP_NAME)
+	@# Install spawn-at utility
+	install -Dm755 bundled-deps/bin/spawn-at $(DESTDIR)$(BINDIR)/spawn-at
 	@# Set executable permissions
 	chmod +x $(DESTDIR)$(BINDIR)/$(APP_NAME)
 	@if [ -d "$(DESTDIR)/usr/bin" ]; then ln -sf $(DESTDIR)$(BINDIR)/$(APP_NAME) $(DESTDIR)/usr/bin/$(APP_NAME); fi
@@ -321,6 +323,7 @@ uninstall:
 	@pkill -x "$(APP_NAME)-bin" 2>/dev/null || true
 	@# Remove from specified PREFIX path
 	rm -f $(DESTDIR)$(BINDIR)/$(APP_NAME)
+	rm -f $(DESTDIR)$(BINDIR)/spawn-at
 	rm -rf $(DESTDIR)$(LIBDIR)/$(APP_NAME)
 	@# Also clean up common installation paths (in case installed with different PREFIX)
 	@if [ "$(BINDIR)" != "/usr/local/bin" ]; then \
@@ -345,17 +348,33 @@ uninstall:
 	rm -f $(DESTDIR)/etc/udev/rules.d/99-win11-clipboard-input.rules
 	rm -f $(DESTDIR)/etc/modules-load.d/uinput.conf
 	rm -f $(DESTDIR)/etc/modules-load.d/win11-clipboard.conf
-	@# Remove GNOME Shell extension
+	@# Remove GNOME Shell companion bridge (Note: window-calls is kept intact as it's a general third-party extension)
 	rm -rf $(DESTDIR)/usr/share/gnome-shell/extensions/win11-clipboard-bridge@harshp2008.github.com 2>/dev/null || true
-	@# Remove autostart entry for the user
+	@for user_home in /home/*; do \
+		if [ -d "$$user_home" ]; then \
+			rm -rf "$$user_home/.local/share/gnome-shell/extensions/win11-clipboard-bridge@harshp2008.github.com" 2>/dev/null || true; \
+		fi; \
+	done
+	@# Clean up registered custom keybindings in gsettings
+	@if [ -n "$$SUDO_USER" ] && command -v gsettings >/dev/null 2>&1; then \
+		sudo -u $$SUDO_USER env "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$$(id -u $$SUDO_USER)/bus" bash -c '\
+		for id in win11-clipboard-history win11-clipboard-history-alt win11-clipboard-history-emoji; do \
+			gsettings reset "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/$$id/" name 2>/dev/null || true; \
+			gsettings reset "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/$$id/" command 2>/dev/null || true; \
+			gsettings reset "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/$$id/" binding 2>/dev/null || true; \
+		done'; \
+	fi
+	@# Remove autostart entries for the user
 	@if [ -n "$$SUDO_USER" ]; then \
-		AUTOSTART_FILE=$$(getent passwd $$SUDO_USER | cut -d: -f6)/.config/autostart/$(APP_NAME).desktop; \
-		rm -f "$$AUTOSTART_FILE" 2>/dev/null || true; \
+		AUTOSTART_DIR=$$(getent passwd $$SUDO_USER | cut -d: -f6)/.config/autostart; \
+		rm -f "$$AUTOSTART_DIR/$(APP_NAME).desktop" 2>/dev/null || true; \
+		rm -f "$$AUTOSTART_DIR/win11clip-firstrun.desktop" 2>/dev/null || true; \
 	fi
 	@# Also remove for all users
 	@for user_home in /home/*; do \
 		if [ -d "$$user_home" ]; then \
 			rm -f "$$user_home/.config/autostart/$(APP_NAME).desktop" 2>/dev/null || true; \
+			rm -f "$$user_home/.config/autostart/win11clip-firstrun.desktop" 2>/dev/null || true; \
 		fi; \
 	done
 	@update-desktop-database $(DESTDIR)$(DATADIR)/applications 2>/dev/null || true

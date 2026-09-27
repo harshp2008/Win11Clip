@@ -1,6 +1,6 @@
 #!/bin/bash
 # install.sh - Smart installer for Win11 Clipboard History
-# Usage: curl -fsSL https://raw.githubusercontent.com/gustavosett/Windows-11-Clipboard-History-For-Linux/master/scripts/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/harshp2008/Win11Clip/master/scripts/install.sh | bash
 
 set -e
 
@@ -9,7 +9,14 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m'
+C_BOLD='\033[1m'
+C_DIM='\033[2m'
+C_RESET='\033[0m'
+C_CYAN='\033[0;36m'
+C_GREEN='\033[0;32m'
+C_YELLOW='\033[1;33m'
 
 log()     { echo -e "${BLUE}[*]${NC} $1"; }
 success() { echo -e "${GREEN}[✓]${NC} $1"; }
@@ -17,8 +24,8 @@ warn()    { echo -e "${YELLOW}[!]${NC} $1"; }
 error()   { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 
 # Configuration
-REPO_OWNER="gustavosett"
-REPO_NAME="Windows-11-Clipboard-History-For-Linux"
+REPO_OWNER="${REPO_OWNER:-harshp2008}"
+REPO_NAME="${REPO_NAME:-Win11Clip}"
 CLOUDSMITH_REPO="gustavosett/clipboard-manager"
 
 # Cleanup previous AppImage installation (prevents conflicts with package manager installs)
@@ -129,6 +136,14 @@ install_via_package_manager() {
     # Clean up any previous AppImage installation to prevent PATH conflicts
     cleanup_appimage_installation
     
+    if [ -f "./src-tauri/target/release/win11-clipboard-history-bin" ]; then
+        log "Local compiled binary found. Installing locally..."
+        sudo cp "./src-tauri/target/release/win11-clipboard-history-bin" "/usr/bin/win11-clipboard-history"
+        sudo chmod +x "/usr/bin/win11-clipboard-history"
+        success "Installed local binary to /usr/bin/"
+        return 0
+    fi
+
     # IMPORTANT: Check distro ID/family FIRST before falling back to command detection.
     # This prevents misdetection when tools like pacman are installed on non-Arch systems.
     
@@ -196,7 +211,8 @@ install_deb() {
     log "Installing from GitHub releases (.deb)..."
     
     LATEST_RELEASE_URL="https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest"
-    RELEASE_TAG=$(curl -s "$LATEST_RELEASE_URL" | grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' | tr -cd '[:alnum:]._-')
+    RELEASE_DATA=$(curl -s "$LATEST_RELEASE_URL")
+    RELEASE_TAG=$(echo "$RELEASE_DATA" | grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' | tr -cd '[:alnum:]._-')
     [ -z "$RELEASE_TAG" ] && error "Failed to fetch version."
     CLEAN_VERSION="${RELEASE_TAG#v}"
     
@@ -205,17 +221,22 @@ install_deb() {
     cd "$TEMP_DIR"
     trap 'rm -rf "$TEMP_DIR"' EXIT
     
-    FILE="win11-clipboard-history_${CLEAN_VERSION}_${DEB_ARCH}.deb"
-    BASE_URL="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$RELEASE_TAG"
+    FILE_URL=$(echo "$RELEASE_DATA" | grep "browser_download_url.*\.deb" | grep -i "${DEB_ARCH}" | head -1 | cut -d '"' -f 4)
+    if [ -n "$FILE_URL" ]; then
+        FILE=$(basename "$FILE_URL")
+    else
+        FILE="win11-clipboard-history_${CLEAN_VERSION}_${DEB_ARCH}.deb"
+        FILE_URL="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$RELEASE_TAG/$FILE"
+    fi
     
     log "Downloading $FILE..."
-    if ! curl -L -o "$FILE" "$BASE_URL/$FILE" --progress-bar --fail; then
+    if ! curl -L -o "$FILE" "$FILE_URL" --progress-bar --fail; then
         error "Failed to download $FILE"
     fi
     chmod 644 "$FILE"
     
     log "Installing dependencies..."
-    sudo apt-get install -y xclip wl-clipboard acl || true
+    sudo apt-get install -y xclip wl-clipboard acl python3-gi gir1.2-gtk-3.0 || true
     sudo apt-get install -y libayatana-appindicator3-1 || sudo apt-get install -y libappindicator3-1 || true
     
     log "Installing .deb package..."
@@ -268,7 +289,8 @@ install_rpm() {
     log "Installing from GitHub releases (.rpm)..."
     
     LATEST_RELEASE_URL="https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest"
-    RELEASE_TAG=$(curl -s "$LATEST_RELEASE_URL" | grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' | tr -cd '[:alnum:]._-')
+    RELEASE_DATA=$(curl -s "$LATEST_RELEASE_URL")
+    RELEASE_TAG=$(echo "$RELEASE_DATA" | grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' | tr -cd '[:alnum:]._-')
     [ -z "$RELEASE_TAG" ] && error "Failed to fetch version."
     CLEAN_VERSION="${RELEASE_TAG#v}"
     
@@ -277,17 +299,22 @@ install_rpm() {
     cd "$TEMP_DIR"
     trap 'rm -rf "$TEMP_DIR"' EXIT
     
-    FILE="win11-clipboard-history-${CLEAN_VERSION}-1.${RPM_ARCH}.rpm"
-    BASE_URL="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$RELEASE_TAG"
+    FILE_URL=$(echo "$RELEASE_DATA" | grep "browser_download_url.*\.rpm" | grep -i "${RPM_ARCH}" | head -1 | cut -d '"' -f 4)
+    if [ -n "$FILE_URL" ]; then
+        FILE=$(basename "$FILE_URL")
+    else
+        FILE="win11-clipboard-history-${CLEAN_VERSION}-1.${RPM_ARCH}.rpm"
+        FILE_URL="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$RELEASE_TAG/$FILE"
+    fi
     
     log "Downloading $FILE..."
-    if ! curl -L -o "$FILE" "$BASE_URL/$FILE" --progress-bar --fail; then
+    if ! curl -L -o "$FILE" "$FILE_URL" --progress-bar --fail; then
         error "Failed to download $FILE"
     fi
     chmod 644 "$FILE"
     
     log "Installing dependencies..."
-    sudo dnf install -y xclip wl-clipboard acl libayatana-appindicator-gtk3 || true
+    sudo dnf install -y xclip wl-clipboard acl libayatana-appindicator-gtk3 python3-gobject gtk3 || true
     
     log "Installing .rpm package..."
     sudo dnf install -y "./$FILE"
@@ -312,7 +339,8 @@ install_rpm_suse() {
     log "Installing from GitHub releases (.rpm)..."
     
     LATEST_RELEASE_URL="https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest"
-    RELEASE_TAG=$(curl -s "$LATEST_RELEASE_URL" | grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' | tr -cd '[:alnum:]._-')
+    RELEASE_DATA=$(curl -s "$LATEST_RELEASE_URL")
+    RELEASE_TAG=$(echo "$RELEASE_DATA" | grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' | tr -cd '[:alnum:]._-')
     [ -z "$RELEASE_TAG" ] && error "Failed to fetch version."
     CLEAN_VERSION="${RELEASE_TAG#v}"
     
@@ -321,17 +349,22 @@ install_rpm_suse() {
     cd "$TEMP_DIR"
     trap 'rm -rf "$TEMP_DIR"' EXIT
     
-    FILE="win11-clipboard-history-${CLEAN_VERSION}-1.${RPM_ARCH}.rpm"
-    BASE_URL="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$RELEASE_TAG"
+    FILE_URL=$(echo "$RELEASE_DATA" | grep "browser_download_url.*\.rpm" | grep -i "${RPM_ARCH}" | head -1 | cut -d '"' -f 4)
+    if [ -n "$FILE_URL" ]; then
+        FILE=$(basename "$FILE_URL")
+    else
+        FILE="win11-clipboard-history-${CLEAN_VERSION}-1.${RPM_ARCH}.rpm"
+        FILE_URL="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$RELEASE_TAG/$FILE"
+    fi
     
     log "Downloading $FILE..."
-    if ! curl -L -o "$FILE" "$BASE_URL/$FILE" --progress-bar --fail; then
+    if ! curl -L -o "$FILE" "$FILE_URL" --progress-bar --fail; then
         error "Failed to download $FILE"
     fi
     chmod 644 "$FILE"
     
     log "Installing dependencies..."
-    sudo zypper install -y xclip wl-clipboard acl libayatana-appindicator3-1 || true
+    sudo zypper install -y xclip wl-clipboard acl libayatana-appindicator3-1 python3-gobject gtk3 || true
     
     log "Installing .rpm package..."
     sudo zypper install -y "./$FILE"
@@ -650,16 +683,371 @@ launch_app() {
     sleep 2
     
     if command -v pgrep >/dev/null 2>&1; then
-        pgrep -f "win11-clipboard-history" >/dev/null 2>&1 && return 0 || return 1
+        pgrep -f "win11-clipboard-history" >/dev/null 2>&1 || return 1
     elif command -v ps >/dev/null 2>&1; then
-        ps aux | grep -v grep | grep -q "win11-clipboard-history" && return 0 || return 1
+        ps aux | grep -v grep | grep -q "win11-clipboard-history" || return 1
+    fi
+
+    # Try to steal focus on Wayland via window-calls
+    if [[ "$XDG_SESSION_TYPE" == "wayland" ]] || [[ "$WAYLAND_DISPLAY" != "" ]]; then
+        gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/Windows --method org.gnome.Shell.Extensions.Windows.Focus "win11-clipboard-history" 2>/dev/null || true
+    fi
+
+    return 0
+}
+
+install_spawn_at() {
+    log "Installing spawn-at utility..."
+    if [ -f "bundled-deps/bin/spawn-at" ]; then
+        sudo install -Dm755 bundled-deps/bin/spawn-at /usr/local/bin/spawn-at
+    elif [ -f "../bundled-deps/bin/spawn-at" ]; then
+        sudo install -Dm755 ../bundled-deps/bin/spawn-at /usr/local/bin/spawn-at
     else
+        local fetched=false
+        local owners=("$REPO_OWNER" "harshp2008")
+        local repos=("$REPO_NAME" "Windows-11-Clipboard-History-For-Linux")
+        for owner in "${owners[@]}"; do
+            for repo in "${repos[@]}"; do
+                local SPAWN_AT_URL="https://raw.githubusercontent.com/$owner/$repo/master/bundled-deps/bin/spawn-at"
+                if sudo curl -fsSL -o /usr/local/bin/spawn-at "$SPAWN_AT_URL" 2>/dev/null; then
+                    fetched=true
+                    break 2
+                fi
+            done
+        done
+        if [ "$fetched" = false ]; then
+            error "Failed to download spawn-at"
+        fi
+    fi
+    sudo chmod 755 /usr/local/bin/spawn-at
+    success "spawn-at installed to /usr/local/bin/spawn-at"
+}
+
+install_uninstaller() {
+    log "Installing uninstaller utility..."
+    if [ -f "scripts/uninstall.sh" ]; then
+        sudo install -Dm755 scripts/uninstall.sh /usr/local/bin/win11-clipboard-uninstall
+    elif [ -f "../scripts/uninstall.sh" ]; then
+        sudo install -Dm755 ../scripts/uninstall.sh /usr/local/bin/win11-clipboard-uninstall
+    elif [ -f "uninstall.sh" ]; then
+        sudo install -Dm755 uninstall.sh /usr/local/bin/win11-clipboard-uninstall
+    else
+        local fetched=false
+        local owners=("$REPO_OWNER" "harshp2008")
+        local repos=("$REPO_NAME" "Windows-11-Clipboard-History-For-Linux")
+        for owner in "${owners[@]}"; do
+            for repo in "${repos[@]}"; do
+                local UNINSTALL_URL="https://raw.githubusercontent.com/$owner/$repo/master/scripts/uninstall.sh"
+                if sudo curl -fsSL -o /usr/local/bin/win11-clipboard-uninstall "$UNINSTALL_URL" 2>/dev/null; then
+                    fetched=true
+                    break 2
+                fi
+            done
+        done
+        if [ "$fetched" = false ]; then
+            error "Failed to download uninstall.sh"
+        fi
+    fi
+    sudo chmod 755 /usr/local/bin/win11-clipboard-uninstall
+    success "Uninstaller installed to /usr/local/bin/win11-clipboard-uninstall"
+}
+
+install_window_calls() {
+    if ! command -v gnome-extensions &>/dev/null; then
         return 0
     fi
+
+    local WC_UUID="window-calls@domandoman.xyz"
+    local EXT_DIR="$HOME/.local/share/gnome-shell/extensions"
+    local staging_needed=false
+    local temp_dir=""
+
+    if [[ "$XDG_SESSION_TYPE" == "wayland" ]] || [[ -n "$WAYLAND_DISPLAY" ]]; then
+        log "GNOME Wayland session detected. Installing patched $WC_UUID extension..."
+    else
+        log "Deploying patched $WC_UUID extension..."
+    fi
+
+    # If running via curl | bash without local bundled-deps, fetch the patched repository archive/files
+    if [ ! -f "bundled-deps/extensions/$WC_UUID/extension.js" ]; then
+        if [ -f "../bundled-deps/extensions/$WC_UUID/extension.js" ]; then
+            mkdir -p bundled-deps/extensions
+            cp -r "../bundled-deps/extensions/$WC_UUID" bundled-deps/extensions/
+            staging_needed=true
+        else
+            log "Local bundled-deps not found. Fetching patched $WC_UUID from repository..."
+            temp_dir=$(mktemp -d)
+            mkdir -p "bundled-deps/extensions/$WC_UUID"
+            staging_needed=true
+            local fetched=false
+            local owners=("$REPO_OWNER" "harshp2008" "gustavosett")
+            local repos=("$REPO_NAME" "Windows-11-Clipboard-History-For-Linux")
+            for owner in "${owners[@]}"; do
+                for repo in "${repos[@]}"; do
+                    local raw_url="https://raw.githubusercontent.com/$owner/$repo/master/bundled-deps/extensions/$WC_UUID"
+                    if curl -fsSL "$raw_url/metadata.json" -o "bundled-deps/extensions/$WC_UUID/metadata.json" 2>/dev/null && \
+                       curl -fsSL "$raw_url/extension.js" -o "bundled-deps/extensions/$WC_UUID/extension.js" 2>/dev/null; then
+                        fetched=true
+                        break 2
+                    fi
+                done
+            done
+            if [ "$fetched" = false ]; then
+                warn "Direct raw fetch failed, trying repository archive tarball..."
+                for owner in "${owners[@]}"; do
+                    for repo in "${repos[@]}"; do
+                        if curl -fsSL "https://github.com/$owner/$repo/archive/refs/heads/master.tar.gz" | tar -xz -C "$temp_dir" 2>/dev/null; then
+                            local archive_wc
+                            archive_wc=$(find "$temp_dir" -type d -name "$WC_UUID" | head -n 1)
+                            if [ -n "$archive_wc" ] && [ -f "$archive_wc/extension.js" ]; then
+                                cp -r "$archive_wc/"* "bundled-deps/extensions/$WC_UUID/"
+                                fetched=true
+                                break 2
+                            fi
+                        fi
+                    done
+                done
+            fi
+        fi
+    fi
+
+    if [ -f "bundled-deps/extensions/$WC_UUID/extension.js" ]; then
+        mkdir -p "$HOME/.local/share/gnome-shell/extensions"
+        rm -rf "$HOME/.local/share/gnome-shell/extensions/window-calls@domandoman.xyz"
+        cp -r "bundled-deps/extensions/window-calls@domandoman.xyz" "$HOME/.local/share/gnome-shell/extensions/"
+        gnome-extensions enable "window-calls@domandoman.xyz" 2>/dev/null || true
+
+        EXTENSIONS_MODIFIED=1
+        RESTART_NEEDED=1
+        success "Deployed and enabled patched $WC_UUID"
+    else
+        error "Failed to locate or download patched $WC_UUID extension."
+    fi
+
+    if [ "$staging_needed" = true ]; then
+        rm -rf bundled-deps/extensions/"$WC_UUID" 2>/dev/null || true
+        rmdir bundled-deps/extensions 2>/dev/null || true
+        rmdir bundled-deps 2>/dev/null || true
+        [ -n "$temp_dir" ] && rm -rf "$temp_dir"
+    fi
+}
+
+install_gnome_extensions() {
+    if ! command -v gnome-extensions &>/dev/null; then
+        return 0
+    fi
+    
+    log "Setting up GNOME Shell extensions..."
+    
+    # 1. win11-clipboard-bridge
+    local BRIDGE_UUID="win11-clipboard-bridge@harshp2008.github.com"
+    local EXT_DIR="$HOME/.local/share/gnome-shell/extensions"
+    local BRIDGE_DIR="$EXT_DIR/$BRIDGE_UUID"
+    
+    local bridge_existed=false
+    [ -f "$BRIDGE_DIR/metadata.json" ] && bridge_existed=true
+
+    mkdir -p "$BRIDGE_DIR"
+    if [ -d "extensions/$BRIDGE_UUID" ]; then
+        cp -r "extensions/$BRIDGE_UUID/"* "$BRIDGE_DIR/"
+    elif [ -d "../extensions/$BRIDGE_UUID" ]; then
+        cp -r "../extensions/$BRIDGE_UUID/"* "$BRIDGE_DIR/"
+    else
+        local fetched=false
+        local repos=("$REPO_NAME" "Windows-11-Clipboard-History-For-Linux")
+        for repo in "${repos[@]}"; do
+            if curl -fsSL "https://raw.githubusercontent.com/$REPO_OWNER/$repo/master/extensions/$BRIDGE_UUID/metadata.json" -o "$BRIDGE_DIR/metadata.json" 2>/dev/null && \
+               curl -fsSL "https://raw.githubusercontent.com/$REPO_OWNER/$repo/master/extensions/$BRIDGE_UUID/extension.js" -o "$BRIDGE_DIR/extension.js" 2>/dev/null; then
+                mkdir -p "$BRIDGE_DIR/schemas"
+                curl -fsSL "https://raw.githubusercontent.com/$REPO_OWNER/$repo/master/extensions/$BRIDGE_UUID/schemas/org.gnome.shell.extensions.win11-clipboard-bridge.gschema.xml" -o "$BRIDGE_DIR/schemas/org.gnome.shell.extensions.win11-clipboard-bridge.gschema.xml" 2>/dev/null || true
+                fetched=true
+                break
+            fi
+        done
+    fi
+    
+    if [ "$bridge_existed" = false ]; then
+        EXTENSIONS_MODIFIED=1
+    fi
+
+    if command -v glib-compile-schemas &>/dev/null && [ -d "$BRIDGE_DIR/schemas" ]; then
+        glib-compile-schemas "$BRIDGE_DIR/schemas" 2>/dev/null || true
+    fi
+    
+    gnome-extensions enable "$BRIDGE_UUID" 2>/dev/null || true
+    success "Configured $BRIDGE_UUID"
+    
+    # 2. window-calls@domandoman.xyz (Patched with GetCoordinates)
+    install_window_calls
+}
+
+# If running under sudo, execute gsettings as the actual user
+run_user_gsettings() {
+    if [ -n "$SUDO_USER" ]; then
+        sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" gsettings "$@"
+    else
+        gsettings "$@"
+    fi
+}
+
+configure_gnome_shortcuts() {
+    if ! command -v gsettings &>/dev/null; then
+        return 0
+    fi
+    
+    if ! run_user_gsettings list-schemas 2>/dev/null | grep -q "org.gnome.settings-daemon.plugins.media-keys"; then
+        return 0
+    fi
+
+    log "Configuring GNOME custom shortcuts..."
+
+    local target_cb_cmd="spawn-at -o -15 -15 -b win11-clipboard-history --clipboard"
+    local target_emoji_cmd="spawn-at -o -15 -15 -b win11-clipboard-history --emoji"
+
+    local raw_bindings
+    raw_bindings=$(run_user_gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null || echo "[]")
+
+    local paths=()
+    while IFS= read -r p; do
+        [ -n "$p" ] && paths+=("$p")
+    done < <(echo "$raw_bindings" | grep -o "'[^']*'" | tr -d "'")
+
+    local found_cb=false
+    local found_emoji=false
+
+    for p in "${paths[@]}"; do
+        local schema="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$p"
+        local cmd
+        cmd=$(run_user_gsettings get "$schema" command 2>/dev/null || true)
+        local bind
+        bind=$(run_user_gsettings get "$schema" binding 2>/dev/null || true)
+
+        cmd=$(echo "$cmd" | sed "s/^'//;s/'$//")
+        bind=$(echo "$bind" | sed "s/^'//;s/'$//")
+
+        if [[ "$cmd" == *"win11-clipboard-history"* ]] || [[ "$bind" == "<Super>v" ]] || [[ "$p" == *"win11-clipboard-history/"* && "$p" != *"emoji"* ]]; then
+            if [[ "$cmd" == *"--emoji"* ]] || [[ "$bind" == "<Super>period" ]] || [[ "$p" == *"emoji"* ]]; then
+                run_user_gsettings set "$schema" name "'Win11Clip Emoji Picker'" 2>/dev/null || true
+                run_user_gsettings set "$schema" command "'$target_emoji_cmd'" 2>/dev/null || true
+                run_user_gsettings set "$schema" binding "'<Super>period'" 2>/dev/null || true
+                found_emoji=true
+            else
+                run_user_gsettings set "$schema" name "'Win11Clip Clipboard History'" 2>/dev/null || true
+                run_user_gsettings set "$schema" command "'$target_cb_cmd'" 2>/dev/null || true
+                run_user_gsettings set "$schema" binding "'<Super>v'" 2>/dev/null || true
+                found_cb=true
+            fi
+        fi
+    done
+
+    local default_cb_path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/win11-clipboard-history/"
+    local default_emoji_path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/win11-clipboard-history-emoji/"
+
+    if [ "$found_cb" = false ]; then
+        local schema="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$default_cb_path"
+        run_user_gsettings set "$schema" name "'Win11Clip Clipboard History'" 2>/dev/null || true
+        run_user_gsettings set "$schema" command "'$target_cb_cmd'" 2>/dev/null || true
+        run_user_gsettings set "$schema" binding "'<Super>v'" 2>/dev/null || true
+        if [[ ! " ${paths[*]} " =~ " $default_cb_path " ]]; then
+            paths+=("$default_cb_path")
+        fi
+    fi
+
+    if [ "$found_emoji" = false ]; then
+        local schema="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$default_emoji_path"
+        run_user_gsettings set "$schema" name "'Win11Clip Emoji Picker'" 2>/dev/null || true
+        run_user_gsettings set "$schema" command "'$target_emoji_cmd'" 2>/dev/null || true
+        run_user_gsettings set "$schema" binding "'<Super>period'" 2>/dev/null || true
+        if [[ ! " ${paths[*]} " =~ " $default_emoji_path " ]]; then
+            paths+=("$default_emoji_path")
+        fi
+    fi
+
+    local formatted_array="["
+    for i in "${!paths[@]}"; do
+        formatted_array+="'${paths[$i]}'"
+        if [ "$i" -lt $((${#paths[@]} - 1)) ]; then
+            formatted_array+=", "
+        fi
+    done
+    formatted_array+="]"
+
+    run_user_gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "$formatted_array" 2>/dev/null || true
+    success "Configured GNOME custom shortcuts (Super+V & Super+.)"
+}
+
+setup_post_login_enable() {
+    if ! command -v gnome-shell &>/dev/null; then
+        return 0
+    fi
+    
+    log "Setting up one-time first-run autostart hook for GNOME extensions..."
+    local AUTOSTART_DIR="$HOME/.config/autostart"
+    local DESKTOP_FILE="$AUTOSTART_DIR/win11clip-firstrun.desktop"
+    
+    mkdir -p "$AUTOSTART_DIR"
+    
+    cat > "$DESKTOP_FILE" << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Win11Clip First-Run Setup
+Exec=sh -c 'sleep 3 && gnome-extensions enable win11-clipboard-bridge@harshp2008.github.com && gnome-extensions enable window-calls@domandoman.xyz && win11-clipboard-history & sleep 1 && for i in 1 2 3 4 5; do gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/Windows --method org.gnome.Shell.Extensions.Windows.Focus "win11-clipboard-history" 2>/dev/null && break; sleep 0.2; done; rm -f ~/.config/autostart/win11clip-firstrun.desktop'
+Hidden=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+EOF
+    
+    chmod +x "$DESKTOP_FILE"
+    success "First-run autostart hook created at $DESKTOP_FILE"
+}
+
+check_if_restart_required() {
+    # If not on GNOME, no restart is needed for extensions
+    local is_gnome=false
+    if [[ "$XDG_CURRENT_DESKTOP" =~ [Gg][Nn][Oo][Mm][Ee] ]] || command -v gnome-shell >/dev/null 2>&1; then
+        is_gnome=true
+    fi
+
+    if [ "$is_gnome" = false ]; then
+        RESTART_NEEDED=0
+        return
+    fi
+    
+    if ! command -v gnome-extensions >/dev/null 2>&1; then
+        RESTART_NEEDED=1
+        return
+    fi
+
+    # 1. Flag fresh installs / modifications directly:
+    # If window-calls or any extension was newly installed or updated during this script run,
+    # or RESTART_NEEDED was already asserted, GNOME Shell MUST restart session
+    # to load the new extension methods (such as GetCoordinates) into memory.
+    if [ "${RESTART_NEEDED:-0}" -eq 1 ] || [ "${EXTENSIONS_MODIFIED:-0}" -eq 1 ]; then
+        RESTART_NEEDED=1
+        return
+    fi
+
+    local exts=(
+        "win11-clipboard-bridge@harshp2008.github.com"
+        "window-calls@domandoman.xyz"
+    )
+    
+    for ext in "${exts[@]}"; do
+        # Try enabling via D-Bus
+        gnome-extensions enable "$ext" 2>/dev/null || true
+
+        # Verify whether it is actually active in gnome-extensions list --enabled
+        if ! gnome-extensions list --enabled 2>/dev/null | grep -q "^${ext}$"; then
+            RESTART_NEEDED=1
+            return
+        fi
+    done
 }
 
 # Main
 main() {
+    EXTENSIONS_MODIFIED=0
+
     echo ""
     echo "╔═══════════════════════════════════════════════════════════╗"
     echo "║     Win11 Clipboard History - Linux Installer             ║"
@@ -688,33 +1076,139 @@ main() {
         install_appimage || build_from_source
     fi
     
-    # Enable GNOME Shell companion extension if gnome-extensions is available
-    if command -v gnome-extensions &>/dev/null; then
-        gnome-extensions enable win11-clipboard-bridge@harshp2008.github.com 2>/dev/null || true
-    fi
+    # Install spawn-at utility globally
+    install_spawn_at
+    
+    # Install uninstaller globally
+    install_uninstaller
+    
+    # Configure GNOME custom shortcuts (Super+V & Super+.)
+    configure_gnome_shortcuts
+    
+    # Configure GNOME Shell extensions if applicable
+    install_gnome_extensions
+    
+    # Check if a restart is genuinely needed
+    check_if_restart_required
+    
+    if [ "$RESTART_NEEDED" -eq 1 ]; then
+        # Set up one-time autostart hook for GNOME extensions
+        setup_post_login_enable
 
-    # Try to launch
-    if launch_app; then
-        echo ""
-        success "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        success " Installation complete! App is running."
-        success " Press Super+V to open your clipboard history."
-        success "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo -e "\n${BLUE}┌──────────────────────────────────────────────────────────────┐${NC}"
+        echo -e "${BLUE}│${NC}  ${GREEN}✓ Installation Complete!${NC}                                    ${BLUE}│${NC}"
+        echo -e "${BLUE}│${NC}  GNOME Shell requires a fresh session to index extensions.   ${BLUE}│${NC}"
+        echo -e "${BLUE}└──────────────────────────────────────────────────────────────┘${NC}\n"
+
+        interactive_session_prompt
     else
-        echo ""
-        success "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        success " Installation complete!"
-        success " Run 'win11-clipboard-history' or find it in your menu."
-        success " Press Super+V to open your clipboard history."
-        success "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        # No restart needed, enable extensions live if on GNOME
+        if [[ "$XDG_CURRENT_DESKTOP" == *"GNOME"* ]] && command -v gnome-extensions >/dev/null 2>&1; then
+            gnome-extensions enable win11-clipboard-bridge@harshp2008.github.com 2>/dev/null || true
+            gnome-extensions enable window-calls@domandoman.xyz 2>/dev/null || true
+        fi
+        
+        # Clean up any previous firstrun hook just in case
+        rm -f "$HOME/.config/autostart/win11clip-firstrun.desktop"
+
+        echo -e "\n${BLUE}┌──────────────────────────────────────────────────────────────┐${NC}"
+        echo -e "${BLUE}│${NC}  ${GREEN}✓ Installation Complete!${NC}                                    ${BLUE}│${NC}"
+        echo -e "${BLUE}│${NC}  All components are active. Press Super+V to open Win11Clip. ${BLUE}│${NC}"
+        echo -e "${BLUE}└──────────────────────────────────────────────────────────────┘${NC}\n"
+        
+        # Launch app directly
+        launch_app >/dev/null 2>&1 || true
+    fi
+}
+
+interactive_session_prompt() {
+    local options=(
+        "Log Out Now (Recommended)"
+        "Reboot System"
+        "I will restart my session later"
+    )
+    local selected=0
+    local key=""
+
+    # Ensure input is read from /dev/tty if stdin is piped (e.g. curl | bash)
+    local tty_in=""
+    if [ -r /dev/tty ]; then
+        exec 3</dev/tty
+        tty_in=3
+    elif [ ! -t 0 ]; then
+        echo -e "${C_YELLOW}[!] Non-interactive session. Please restart your session or log out to activate extensions.${C_RESET}"
+        return 0
     fi
 
+    # 1. Print the header ONCE outside the loop
+    echo -e "${C_BOLD}Would you like to restart your session now?${C_RESET} ${C_DIM}(Use arrow keys or 1-3)${C_RESET}"
     echo ""
-    echo -e "${YELLOW}Important (GNOME / Wayland users):${NC}"
-    echo -e "After installing for the first time, you must ${GREEN}log out and log back in${NC} (or restart your machine) so GNOME Shell loads the companion extension."
-    echo -e "If Always-On-Top pinning does not work immediately after login, ensure the extension is enabled:"
-    echo -e "  ${BLUE}gnome-extensions enable win11-clipboard-bridge@harshp2008.github.com${NC}"
+
+    # Hide cursor
+    printf "\033[?25l"
+    trap 'printf "\033[?25h"; echo ""; exit 1' INT TERM
+
+    while true; do
+        # 2. Print ONLY the options
+        for i in "${!options[@]}"; do
+            if [ "$i" -eq "$selected" ]; then
+                echo -e "\033[K  ${C_CYAN}${C_BOLD}❯ ${options[$i]}${C_RESET}"
+            else
+                echo -e "\033[K  ${C_DIM}  ${options[$i]}${C_RESET}"
+            fi
+        done
+
+        # Read user input
+        key=""
+        IFS= read -u "${tty_in:-0}" -rsn1 key || true
+        if [[ $key == $'\x1b' ]]; then
+            # An escape sequence was started; read next 2 characters without timeout races
+            read -u "${tty_in:-0}" -rsn2 -t 0.1 key 2>/dev/null || true
+            case "$key" in
+                '[A'|'OA') # Up arrow
+                    selected=$(( (selected - 1 + ${#options[@]}) % ${#options[@]} ))
+                    ;;
+                '[B'|'OB') # Down arrow
+                    selected=$(( (selected + 1) % ${#options[@]} ))
+                    ;;
+            esac
+        elif [[ $key == "" ]]; then
+            # Enter key pressed
+            break
+        elif [[ $key == "1" ]]; then
+            selected=0; break
+        elif [[ $key == "2" ]]; then
+            selected=1; break
+        elif [[ $key == "3" ]]; then
+            selected=2; break
+        elif [[ $key == "q" || $key == "Q" ]]; then
+            # Allow clean quit
+            selected=2; break
+        fi
+
+        # Move cursor back up exactly by the number of options printed
+        printf "\033[%dA" "${#options[@]}"
+    done
+
+    [ -n "$tty_in" ] && exec 3<&-
+
+    # Restore cursor
+    printf "\033[?25h"
     echo ""
+
+    case "$selected" in
+        0)
+            echo -e "${C_GREEN}[*] Logging out of GNOME session...${C_RESET}"
+            gnome-session-quit --logout --no-prompt 2>/dev/null || pkill -KILL -u "$USER"
+            ;;
+        1)
+            echo -e "${C_GREEN}[*] Rebooting system...${C_RESET}"
+            systemctl reboot 2>/dev/null || sudo reboot
+            ;;
+        2)
+            echo -e "${C_YELLOW}[!] Remember to log out and back in before using Win11Clip (Super+V).${C_RESET}"
+            ;;
+    esac
 }
 
 main "$@"

@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+
+x="" y="" w="" h="" offset_x="" offset_y=""
+has_pos=0 has_offset=0 bounds=0 padding=0
+
+# 1. Parse arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p|--pos)
+      x="$2"
+      y="$3"
+      has_pos=1
+      shift 3
+      ;;
+    -s|--size)
+      w="$2"
+      h="$3"
+      shift 3
+      ;;
+    -o|--offset)
+      offset_x="$2"
+      offset_y="$3"
+      has_offset=1
+      shift 3
+      ;;
+    -b|--bounds)
+      bounds=1
+      # Check if the next argument is a number (the padding value)
+      if [[ "${2:-}" =~ ^[0-9]+$ ]]; then
+        padding="$2"
+        shift 2
+      else
+        padding=0
+        shift 1
+      fi
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Error: Unknown option $1" >&2
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+# 2. Conflict check
+if [[ $has_pos -eq 1 && $has_offset -eq 1 ]]; then
+  echo "Error: --pos and --offset cannot be used together." >&2
+  exit 1
+fi
+
+# 3. Auto-fetch mouse coordinates if explicit position is missing
+
+if [[ $has_pos -eq 0 ]]; then
+  raw_coords=$(gdbus call --session \
+    --dest org.gnome.Shell \
+    --object-path /org/gnome/Shell/Extensions/Windows \
+    --method org.gnome.Shell.Extensions.Windows.GetCoordinates 2>/dev/null)
+    
+  if [[ "$raw_coords" =~ \(([0-9]+),[[:space:]]*([0-9]+)\) ]]; then
+    x="${BASH_REMATCH[1]}"
+    y="${BASH_REMATCH[2]}"
+  else
+    echo "Warning: Windows extension not responding or missing GetCoordinates. Falling back to (0,0)." >&2
+    x=0
+    y=0
+  fi
+fi
+
+
+
+
+# 4. Apply offset
+if [[ $has_offset -eq 1 ]]; then
+  x=$((x + offset_x))
+  y=$((y + offset_y))
+fi
+
+if [[ $# -eq 0 ]]; then
+  echo "Error: No application command provided." >&2
+  exit 1
+fi
+
+# 5. Active Enforcement Loop
+python3 -c '
+import sys, time, json, subprocess
+
+x_arg, y_arg, w_arg, h_arg, bounds_arg, pad_arg = sys.argv[1:7]
+cmd = sys.argv[7:]
+
+enforce_bounds = (bounds_arg == "1")
+padding = int(pad_arg) if pad_arg else 0
+
+target_x, target_y = int(x_arg), int(y_arg)
+target_w = int(w_arg) if w_arg else None
+target_h = int(h_arg) if h_arg else None
+
+def call_dbus(method, *args):
+    try:
+        return subprocess.check_output([
+            "gdbus", "call", "--session",
+            "--dest", "org.gnome.Shell",
+            "--object-path", "/org/gnome/Shell/Extensions/Windows",
+            "--method", f"org.gnome.Shell.Extensions.Windows.{method}",
+            *args
+        ], stderr=subprocess.DEVNULL).decode()
+    except Exception:
+        return ""
+
+def extract_json(out, bracket_start, bracket_end):
+    start = out.find(bracket_start)
+    end = out.rfind(bracket_end)
+    if start != -1 and end != -1:
+        try:
+            return json.loads(out[start:end+1].replace("\\\"", "\""))
+        except Exception:
+            pass
+    return None
+
+def get_ids():
+    data = extract_json(call_dbus("List"), "[", "]")
+    if data:
+        return {item["id"] for item in data if "id" in item}
+    return set()
+
+def get_rect(wid):
+    return extract_json(call_dbus("GetFrameRect", f"uint32 {wid}"), "{", "}")
+
+bound_min_x, bound_min_y, bound_max_x, bound_max_y = 0, 0, 99999, 99999
+clamped_x, clamped_y = target_x, target_y
+
+if enforce_bounds:
+    try:
+        import gi
+        gi.require_version("Gdk", "3.0")
+        from gi.repository import Gdk
+        disp = Gdk.Display.get_default()
+        mon = disp.get_monitor_at_point(target_x, target_y)
+        geo = mon.get_geometry()
+        
+        # Apply padding to the monitor edges
+        bound_min_x = geo.x + padding
+        bound_min_y = geo.y + padding
+        bound_max_x = (geo.x + geo.width) - padding
+        bound_max_y = (geo.y + geo.height) - padding
+        
+        if target_w and target_h:
+            if clamped_x + target_w > bound_max_x: clamped_x = bound_max_x - target_w
+            if clamped_y + target_h > bound_max_y: clamped_y = bound_max_y - target_h
+            if clamped_x < bound_min_x: clamped_x = bound_min_x
+            if clamped_y < bound_min_y: clamped_y = bound_min_y
+    except Exception:
+        pass
+
+old_ids = get_ids()
+subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+new_id = None
+for _ in range(200):
+    diff = get_ids() - old_ids
+    if diff:
+        new_id = str(list(diff)[-1])
+        call_dbus("Unmaximize", f"uint32 {new_id}")
+        
+        if target_w and target_h:
+            call_dbus("MoveResize", f"uint32 {new_id}", f"int32 {clamped_x}", f"int32 {clamped_y}", f"uint32 {target_w}", f"uint32 {target_h}")
+        call_dbus("Move", f"uint32 {new_id}", f"int32 {clamped_x}", f"int32 {clamped_y}")
+        break
+    time.sleep(0.01)
+
+if not new_id:
+    sys.exit(1)
+
+for _ in range(12):
+    rect = get_rect(new_id)
+    curr_w = rect.get("width", 0) if rect else 0
+    curr_h = rect.get("height", 0) if rect else 0
+    
+    use_w = curr_w if curr_w > 0 else (target_w if target_w else 0)
+    use_h = curr_h if curr_h > 0 else (target_h if target_h else 0)
+    
+    dynamic_clamped_x, dynamic_clamped_y = target_x, target_y
+    if enforce_bounds and use_w > 0 and use_h > 0:
+        if dynamic_clamped_x + use_w > bound_max_x:
+            dynamic_clamped_x = bound_max_x - use_w
+        if dynamic_clamped_y + use_h > bound_max_y:
+            dynamic_clamped_y = bound_max_y - use_h
+        if dynamic_clamped_x < bound_min_x:
+            dynamic_clamped_x = bound_min_x
+        if dynamic_clamped_y < bound_min_y:
+            dynamic_clamped_y = bound_min_y
+
+    if target_w and target_h:
+        call_dbus("MoveResize", f"uint32 {new_id}", f"int32 {dynamic_clamped_x}", f"int32 {dynamic_clamped_y}", f"uint32 {target_w}", f"uint32 {target_h}")
+    call_dbus("Move", f"uint32 {new_id}", f"int32 {dynamic_clamped_x}", f"int32 {dynamic_clamped_y}")
+    
+    time.sleep(0.04)
+    
+    rect = get_rect(new_id)
+    if rect:
+        curr_x, curr_y = rect.get("x", -1), rect.get("y", -1)
+        curr_w, curr_h = rect.get("width", -1), rect.get("height", -1)
+        
+        if abs(curr_x - dynamic_clamped_x) <= 50 and abs(curr_y - dynamic_clamped_y) <= 50:
+            if not target_w or (abs(curr_w - target_w) <= 50 and abs(curr_h - target_h) <= 50):
+                break
+' "$x" "$y" "$w" "$h" "$bounds" "$padding" "$@"
