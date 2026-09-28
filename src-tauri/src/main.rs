@@ -312,11 +312,18 @@ async fn finish_setup(app: AppHandle) -> Result<(), String> {
         let _ = setup_window.close();
     }
 
-    // 3. Show main window
-    if let Some(main_window) = app.get_webview_window("main") {
-        // Ensure it's ready to be shown
-        WindowController::position_and_show(&main_window, &app);
-    }
+    // 3. Notify user to use shortcut instead of showing main window directly
+    // This allows `spawn-at` to properly calculate the mouse cursor coordinates for first launch.
+    std::thread::spawn(|| {
+        let _ = std::process::Command::new("notify-send")
+            .arg("-a")
+            .arg("Clipboard History")
+            .arg("-i")
+            .arg("win11-clipboard-history")
+            .arg("Setup Complete")
+            .arg("Press Super+V to open Clipboard History.")
+            .output();
+    });
 
     // 4. Emit event to main window to update its state (stop waiting)
     // We emit to all just in case, or specifically to main
@@ -559,6 +566,7 @@ impl WindowController {
                         }
                         // Steal focus explicitly via window-calls
                         let _ = win11_clipboard_history_lib::focus_manager::wayland_activate_window_id(cb_id);
+                        win11_clipboard_history_lib::focus_manager::wayland_snap_to_cursor(cb_id);
                         break;
                     }
                 }

@@ -599,3 +599,52 @@ pub fn wayland_get_clipboard_window_id() -> Result<u64, String> {
         })
         .ok_or_else(|| "Clipboard main window not found in List".to_string())
 }
+
+/// Snaps the specified Wayland window to the current cursor position via D-Bus extension.
+pub fn wayland_snap_to_cursor(cb_id: u64) {
+    if let Ok(output) = std::process::Command::new("gdbus")
+        .args([
+            "call",
+            "--session",
+            "--dest",
+            "org.gnome.Shell",
+            "--object-path",
+            "/org/gnome/Shell/Extensions/Windows",
+            "--method",
+            "org.gnome.Shell.Extensions.Windows.GetCoordinates",
+        ])
+        .output()
+    {
+        let raw_coords = String::from_utf8_lossy(&output.stdout);
+        let parts: Vec<&str> = raw_coords.split(',').collect();
+        if parts.len() >= 2 {
+            let x = parts[0]
+                .split_whitespace()
+                .last()
+                .and_then(|p| p.trim_matches(|c: char| !c.is_numeric()).parse::<i32>().ok());
+            let y = parts[1]
+                .split_whitespace()
+                .last()
+                .and_then(|p| p.trim_matches(|c: char| !c.is_numeric()).parse::<i32>().ok());
+
+            if let (Some(x_val), Some(y_val)) = (x, y) {
+                let _ = std::process::Command::new("gdbus")
+                    .args([
+                        "call",
+                        "--session",
+                        "--dest",
+                        "org.gnome.Shell",
+                        "--object-path",
+                        "/org/gnome/Shell/Extensions/Windows",
+                        "--method",
+                        "org.gnome.Shell.Extensions.Windows.Move",
+                        &format!("uint32 {}", cb_id),
+                        &format!("int32 {}", x_val - 15),
+                        &format!("int32 {}", y_val - 15),
+                    ])
+                    .output();
+            }
+        }
+    }
+}
+
