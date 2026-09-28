@@ -490,95 +490,33 @@ impl GSettings {
         let mut list = self.get_list()?;
         
         let expected_path = format!("{}/{}/", self.path_prefix, shortcut.id);
-        let mut target_path = expected_path.clone();
-        let mut found_existing = false;
-        let mut stale_paths = Vec::new();
-        let mut needs_rewrite = true;
+        let schema_path = format!("{}:{}", self.binding_schema, expected_path);
 
         let full_cmd = shortcut.full_command();
+        let full_cmd_val = format!("'{}'", full_cmd);
+        let name_val = format!("'{}'", shortcut.name);
 
-        for item in &list {
-            let item_path = if self.path_prefix.contains("cinnamon") {
-                format!("{}/{}/", self.path_prefix, item)
-            } else {
-                item.clone()
-            };
-            
-            let item_schema_path = format!("{}:{}", self.binding_schema, item_path);
-            let name = Utils::run("gsettings", &["get", &item_schema_path, "name"]).unwrap_or_default();
-            let command = Utils::run("gsettings", &["get", &item_schema_path, "command"]).unwrap_or_default();
-            let binding = Utils::run("gsettings", &["get", &item_schema_path, "binding"]).unwrap_or_default();
-            
-            let name_clean = name.trim_matches('\'').trim_matches('"');
-            let command_clean = command.trim_matches('\'').trim_matches('"');
-            let binding_clean = binding.trim_matches('\'').trim_matches('"').trim_start_matches('[').trim_end_matches(']').trim_matches('\'').trim_matches('"');
-            
-            // Strictly match THIS specific shortcut by checking its ID path or exact exact name
-            let is_this_shortcut = item_path == expected_path || name_clean == shortcut.name;
+        Utils::run("gsettings", &["set", &schema_path, "name", &name_val])?;
+        Utils::run("gsettings", &["set", &schema_path, "command", &full_cmd_val])?;
 
-            if is_this_shortcut {
-                if !found_existing {
-                    target_path = item_path.clone();
-                    found_existing = true;
-                    
-                    // If the existing shortcut already has the correct command, skip rewriting it
-                    // This preserves any custom bindings the user might have set manually
-                    // and avoids dconf race conditions when re-registering
-                    if command_clean == full_cmd && name_clean == shortcut.name {
-                        if binding_clean == shortcut.gnome_binding || !binding_clean.is_empty() {
-                            needs_rewrite = false;
-                        }
-                    }
-                } else {
-                    // Only push to stale_paths if it's a duplicate of THIS exact shortcut
-                    stale_paths.push(item.clone());
-                }
-            }
-        }
-
-        let schema_path = format!("{}:{}", self.binding_schema, target_path);
-
-        if needs_rewrite {
-            let full_cmd_val = format!("'{}'", full_cmd);
-            let name_val = format!("'{}'", shortcut.name);
-
-            Utils::run("gsettings", &["set", &schema_path, "name", &name_val])?;
-            Utils::run("gsettings", &["set", &schema_path, "command", &full_cmd_val])?;
-
-            let binding_val = if use_array_for_binding {
-                format!("['{}']", shortcut.gnome_binding)
-            } else {
-                format!("'{}'", shortcut.gnome_binding)
-            };
-            Utils::run("gsettings", &["set", &schema_path, "binding", &binding_val])?;
-        }
+        let binding_val = if use_array_for_binding {
+            format!("['{}']", shortcut.gnome_binding)
+        } else {
+            format!("'{}'", shortcut.gnome_binding)
+        };
+        Utils::run("gsettings", &["set", &schema_path, "binding", &binding_val])?;
 
         let entry_check = if self.path_prefix.contains("cinnamon") {
-            target_path.split('/').filter(|s| !s.is_empty()).last().unwrap_or("").to_string()
+            expected_path.split('/').filter(|s| !s.is_empty()).last().unwrap_or("").to_string()
         } else {
-            target_path.clone()
+            expected_path.clone()
         };
 
         if !list.contains(&entry_check) {
             list.push(entry_check);
+            self.set_list(&list)?;
         }
 
-        if !stale_paths.is_empty() {
-            for stale in &stale_paths {
-                list.retain(|x| x != stale);
-                let stale_path = if self.path_prefix.contains("cinnamon") {
-                    format!("{}/{}/", self.path_prefix, stale)
-                } else {
-                    stale.clone()
-                };
-                let stale_schema_path = format!("{}:{}", self.binding_schema, stale_path);
-                let _ = Utils::run("gsettings", &["reset", &stale_schema_path, "name"]);
-                let _ = Utils::run("gsettings", &["reset", &stale_schema_path, "command"]);
-                let _ = Utils::run("gsettings", &["reset", &stale_schema_path, "binding"]);
-            }
-        }
-
-        self.set_list(&list)?;
         Ok(())
     }
 
