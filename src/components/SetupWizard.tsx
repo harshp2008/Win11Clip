@@ -14,6 +14,7 @@ import {
   Copy,
   AlertCircle,
   Zap,
+  Terminal,
 } from 'lucide-react'
 
 interface PermissionStatus {
@@ -517,7 +518,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
           </div>
           <Button
             id="copy-path"
-            onClick={() => copyToClipboard('spawn-at -o -15 -15 -b win11-clipboard-history --clipboard')}
+            onClick={() => copyToClipboard('spawn-at -o -15 -15 -b 10 win11-clipboard-history --clipboard')}
           >
             <span className="flex items-center justify-center gap-2">
               <Copy className="w-4 h-4" />
@@ -601,7 +602,58 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
       </div>
     </div>,
 
-    // Step 4: Done
+    // Step 4: Terminal Pasting
+    <div key="terminal">
+      <div className="text-center mb-6">
+        <div
+          className={clsx(
+            'w-14 h-14 mx-auto rounded-full flex items-center justify-center mb-4',
+            isDark ? 'bg-win11-bg-tertiary' : 'bg-win11Light-bg-tertiary'
+          )}
+        >
+          <Terminal
+            className={clsx(
+              'w-7 h-7',
+              isDark ? 'text-win11-text-secondary' : 'text-win11Light-text-secondary'
+            )}
+          />
+        </div>
+        <h2
+          className={clsx(
+            'text-lg font-semibold mb-2',
+            isDark ? 'text-win11-text-primary' : 'text-win11Light-text-primary'
+          )}
+        >
+          Terminal Pasting
+        </h2>
+        <p
+          className={clsx(
+            'text-sm mb-4',
+            isDark ? 'text-win11-text-secondary' : 'text-win11Light-text-secondary'
+          )}
+        >
+          Terminal emulators require <kbd className={clsx("px-1.5 py-0.5 rounded font-mono text-xs border", isDark ? "bg-win11-bg-tertiary border-win11-border-subtle" : "bg-win11Light-bg-tertiary border-win11Light-border")}>Ctrl+Shift+V</kbd> instead of the standard shortcut. Use this simple shortcut to paste into any terminal or CLI:
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-3 mb-6 text-sm text-left px-2">
+        <div className={clsx("flex items-start gap-3 p-3 rounded-win11 border", isDark ? "bg-win11-bg-tertiary border-win11-border-subtle" : "bg-win11Light-bg-tertiary border-win11Light-border")}>
+          <Keyboard className="w-5 h-5 mt-0.5 opacity-70" />
+          <div>
+            <p className="font-medium mb-0.5">Shift + Click  /  Shift + Enter</p>
+            <p className="opacity-70 text-xs leading-relaxed">Hold Shift while clicking any text item or pressing Enter</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex justify-center">
+        <Button id="terminal-continue" onClick={() => setStep(5)} primary>
+          Got it
+        </Button>
+      </div>
+    </div>,
+
+    // Step 5: Done
     <div key="done" className="text-center">
       <div className="mb-6">
         <div

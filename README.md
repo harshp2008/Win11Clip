@@ -89,8 +89,8 @@ On GNOME, `<Super>v` is bound by default to `focus-active-notification` (Message
 
 ### Manual Keybinding Setup (If Needed)
 If you are running a standalone window manager (Sway, Hyprland, i3, etc.) or prefer manual configuration:
-- **Clipboard History:** `spawn-at -o -15 -15 -b win11-clipboard-history --clipboard`
-- **Emoji Picker:** `spawn-at -o -15 -15 -b win11-clipboard-history --emoji`
+- **Clipboard History:** `spawn-at -o -15 -15 -b 10 win11-clipboard-history --clipboard`
+- **Emoji Picker:** `spawn-at -o -15 -15 -b 10 win11-clipboard-history --emoji`
 
 ---
 

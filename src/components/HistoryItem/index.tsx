@@ -10,7 +10,7 @@ import { getIconSize, getIconContainerClasses } from './_HistoryItemUtils'
 
 interface HistoryItemProps {
   item: ClipboardItem
-  onPaste: (id: string) => void
+  onPaste: (id: string, shiftHeld?: boolean) => void
   onDelete: (id: string) => void
   onTogglePin: (id: string) => void
   onFocus?: () => void
@@ -74,9 +74,12 @@ export const HistoryItem = forwardRef<HTMLDivElement, HistoryItemProps>(function
   )
 
   // Handle paste on click
-  const handleClick = useCallback(() => {
-    onPaste(item.id)
-  }, [item.id, onPaste])
+  const handleClick = useCallback(
+    (e: React.MouseEvent | React.KeyboardEvent) => {
+      onPaste(item.id, isText ? e.shiftKey : false)
+    },
+    [item.id, isText, onPaste]
+  )
 
   // Handle delete with stopPropagation
   const handleDelete = useCallback(
@@ -102,6 +105,11 @@ export const HistoryItem = forwardRef<HTMLDivElement, HistoryItemProps>(function
 
   // Prevent buttons from taking focus on pointer down (covers mouse/touch/pen)
   const handlePointerDownPreventDefault = useCallback((e: React.PointerEvent) => {
+    e.preventDefault()
+  }, [])
+
+  // Prevent default context menu
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
   }, [])
 
@@ -134,13 +142,14 @@ export const HistoryItem = forwardRef<HTMLDivElement, HistoryItemProps>(function
         `focus:outline-none focus-visible:ring-2 focus-visible:ring-win11-bg-accent`
       )}
       onClick={handleClick}
+      onContextMenu={handleContextMenu}
       onFocus={onFocus}
       role="button"
       tabIndex={isFocused ? 0 : -1}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
-          handleClick()
+          handleClick(e)
         }
       }}
       style={{
@@ -241,6 +250,7 @@ export const HistoryItem = forwardRef<HTMLDivElement, HistoryItemProps>(function
       {item.pinned && (
         <div className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-win11-bg-accent" />
       )}
+
     </div>
   )
 })

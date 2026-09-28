@@ -84,7 +84,7 @@ const SHORTCUTS: &[ShortcutConfig] = &[
     ShortcutConfig {
         id: "win11-clipboard-history",
         name: "Clipboard History",
-        command: "spawn-at -o -15 -15 -b win11-clipboard-history", 
+        command: "spawn-at -o -15 -15 -b 10 win11-clipboard-history", 
         args: "--clipboard",
         gnome_binding: "<Super>v",
         kde_binding: "Meta+V",
@@ -99,7 +99,7 @@ const SHORTCUTS: &[ShortcutConfig] = &[
     ShortcutConfig {
         id: "win11-clipboard-history-alt",
         name: "Clipboard History (Alt)",
-        command: "spawn-at -o -15 -15 -b win11-clipboard-history", 
+        command: "spawn-at -o -15 -15 -b 10 win11-clipboard-history", 
         args: "--clipboard",
         gnome_binding: "<Ctrl><Alt>v",
         kde_binding: "Ctrl+Alt+V",
@@ -114,7 +114,7 @@ const SHORTCUTS: &[ShortcutConfig] = &[
     ShortcutConfig {
         id: "win11-clipboard-history-emoji",
         name: "Emoji Picker",
-        command: "spawn-at -o -15 -15 -b win11-clipboard-history", 
+        command: "spawn-at -o -15 -15 -b 10 win11-clipboard-history", 
         args: "--emoji",
         gnome_binding: "<Super>period",
         kde_binding: "Meta+.",

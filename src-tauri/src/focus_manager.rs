@@ -500,11 +500,7 @@ pub fn wayland_get_saved_window_id() -> u64 {
     history.front().map(|(id, _)| *id).unwrap_or(0)
 }
 
-/// Returns the wm_class of the window at the top of the 2-window focus stack.
-pub fn wayland_get_saved_window_class() -> String {
-    let history = FOCUS_HISTORY.lock();
-    history.front().map(|(_, class)| class.clone()).unwrap_or_default()
-}
+
 
 /// Activate (focus) a window by its `window-calls` integer ID.
 pub fn wayland_activate_window_id(winid: u64) -> Result<(), String> {

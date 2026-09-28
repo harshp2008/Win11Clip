@@ -131,17 +131,8 @@ fn warm_up_uinput() {
 
 type PasteStrategy = (&'static str, fn(bool) -> Result<(), PasteFailure>);
 
-pub fn simulate_paste_keystroke() -> Result<(), String> {
-    let wm_class = crate::focus_manager::wayland_get_saved_window_class().to_lowercase();
-    
-    // Terminal heuristics: many terminal emulators bypass the standard Wayland/X11
-    // clipboard abstraction or explicitly reserve Ctrl+V for block-select mode.
-    // Standard Shift+Insert behaves as universal paste across almost all environments.
-    let is_terminal = wm_class.contains("terminal")
-        || wm_class.contains("pty")
-        || wm_class.contains("alacritty")
-        || wm_class.contains("kitty")
-        || wm_class.contains("konsole");
+pub fn simulate_paste_keystroke(shift_held: bool) -> Result<(), String> {
+    let is_terminal = shift_held;
 
     eprintln!("[SimulatePaste] Sending Paste (is_terminal={})...", is_terminal);
 
@@ -200,7 +191,7 @@ fn fake_key<C: x11rb::connection::Connection + x11rb::protocol::xtest::Connectio
         .map_err(|error| format!("X11 flush failed: {}", error))
 }
 
-fn simulate_paste_xtest(_is_terminal: bool) -> Result<(), PasteFailure> {
+fn simulate_paste_xtest(is_terminal: bool) -> Result<(), PasteFailure> {
     let mut device = xtest_device_lock().lock();
     if device.is_none() {
         *device = Some(XtestDevice::create().map_err(PasteFailure::Retryable)?);
@@ -210,7 +201,7 @@ fn simulate_paste_xtest(_is_terminal: bool) -> Result<(), PasteFailure> {
     let result = current
         .refresh_keymap_if_needed()
         .map_err(PasteFailure::Retryable)
-        .and_then(|()| current.send_ctrl_v());
+        .and_then(|()| current.send_paste(is_terminal));
     if result.is_err() {
         // Reconnect on the next attempt if the X server connection went away.
         *device = None;
@@ -275,12 +266,16 @@ impl XtestDevice {
         Ok(())
     }
 
-    fn send_ctrl_v(&mut self) -> Result<(), PasteFailure> {
+    fn send_paste(&mut self, is_terminal: bool) -> Result<(), PasteFailure> {
         let mut guard = XtestKeyGuard::new(&self.connection, self.root_window);
-
+        
         let operation = (|| {
             guard.press(self.ctrl_keycode, false, "Failed to press Ctrl")?;
             wait_for_x11_key_state(&self.connection, self.ctrl_keycode, true)?;
+
+            if is_terminal {
+                eprintln!("[XTest] Warning: Terminal Shift+Insert/Ctrl+Shift+V not fully supported in XTest fallback. Sending Ctrl+V.");
+            }
 
             guard.press(self.v_keycode, true, "Failed to press V")?;
             wait_for_x11_key_state(&self.connection, self.v_keycode, true)?;
@@ -557,9 +552,8 @@ impl UinputDevice {
     fn release_all_keys(&mut self) -> Result<(), String> {
         self.write_events(&[
             input_event(EV_KEY, KEY_V, 0),
-            input_event(EV_KEY, KEY_LEFTCTRL, 0),
-            input_event(EV_KEY, KEY_INSERT, 0),
             input_event(EV_KEY, KEY_LEFTSHIFT, 0),
+            input_event(EV_KEY, KEY_LEFTCTRL, 0),
             input_event(EV_SYN, SYN_REPORT, 0),
         ])
     }
@@ -600,18 +594,20 @@ fn simulate_paste_uinput(is_terminal: bool) -> Result<(), PasteFailure> {
     Ok(())
 }
 
-fn paste_sequence(is_terminal: bool) -> [libc::input_event; 6] {
+fn paste_sequence(is_terminal: bool) -> Vec<libc::input_event> {
     if is_terminal {
-        [
+        vec![
+            input_event(EV_KEY, KEY_LEFTCTRL, 1),
             input_event(EV_KEY, KEY_LEFTSHIFT, 1),
-            input_event(EV_KEY, KEY_INSERT, 1),
+            input_event(EV_KEY, KEY_V, 1),
             input_event(EV_SYN, SYN_REPORT, 0),
-            input_event(EV_KEY, KEY_INSERT, 0),
+            input_event(EV_KEY, KEY_V, 0),
             input_event(EV_KEY, KEY_LEFTSHIFT, 0),
+            input_event(EV_KEY, KEY_LEFTCTRL, 0),
             input_event(EV_SYN, SYN_REPORT, 0),
         ]
     } else {
-        [
+        vec![
             input_event(EV_KEY, KEY_LEFTCTRL, 1),
             input_event(EV_KEY, KEY_V, 1),
             input_event(EV_SYN, SYN_REPORT, 0),

@@ -20,7 +20,7 @@ export function ClipboardTab(props: {
   clearHistory: () => void
   deleteItem: (id: string) => void
   togglePin: (id: string) => void
-  onPaste: (id: string) => void
+  onPaste: (id: string, shiftHeld?: boolean) => void
   settings: UserSettings
   tabBarRef: React.RefObject<TabBarRef | null>
 }) {
@@ -456,6 +456,16 @@ export function ClipboardTab(props: {
               />
             ))
           )}
+        </div>
+      )}
+      
+      {/* Terminal Paste Hint */}
+      {history.length > 0 && !isLoading && (
+        <div className={clsx(
+          "w-full text-center text-[10px] pb-3 select-none",
+          isDark ? "text-white/40" : "text-black/40"
+        )}>
+          Hold Shift to paste in terminal
         </div>
       )}
     </>

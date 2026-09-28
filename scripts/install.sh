@@ -901,8 +901,8 @@ configure_gnome_shortcuts() {
 
     log "Configuring GNOME custom shortcuts..."
 
-    local target_cb_cmd="spawn-at -o -15 -15 -b win11-clipboard-history --clipboard"
-    local target_emoji_cmd="spawn-at -o -15 -15 -b win11-clipboard-history --emoji"
+    local target_cb_cmd="spawn-at -o -15 -15 -b 10 win11-clipboard-history --clipboard"
+    local target_emoji_cmd="spawn-at -o -15 -15 -b 10 win11-clipboard-history --emoji"
 
     local raw_bindings
     raw_bindings=$(run_user_gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null || echo "[]")

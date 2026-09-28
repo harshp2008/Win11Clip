@@ -85,9 +85,9 @@ export function useClipboardHistory() {
 
   // Paste an item
   const pasteItem = useCallback(
-    async (id: string) => {
+    async (id: string, shiftHeld: boolean = false) => {
       try {
-        await invoke('paste_item', { id })
+        await invoke('paste_item', { id, shift_held: shiftHeld })
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err)
         console.warn('[useClipboardHistory] Paste failed, refreshing history:', errorMessage)

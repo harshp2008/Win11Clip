@@ -12,7 +12,7 @@ use tauri::{
     WindowEvent,
 };
 use win11_clipboard_history_lib::autostart_manager;
-use win11_clipboard_history_lib::clipboard_manager::{ClipboardItem, ClipboardManager};
+use win11_clipboard_history_lib::clipboard_manager::{ClipboardContent, ClipboardItem, ClipboardManager};
 use win11_clipboard_history_lib::config_manager::{resolve_window_position, ConfigManager};
 use win11_clipboard_history_lib::emoji_manager::{EmojiManager, EmojiUsage};
 use win11_clipboard_history_lib::focus_manager::x11_robust_activate;
@@ -165,7 +165,7 @@ fn is_theme_listener_active() -> bool {
 }
 
 #[tauri::command]
-async fn paste_item(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
+async fn paste_item(app: AppHandle, state: State<'_, AppState>, id: String, shift_held: Option<bool>) -> Result<(), String> {
     let _paste_guard = state.paste_gate.lock().await;
 
     // 1. Get Item (Scope lock tightly)
@@ -185,7 +185,10 @@ async fn paste_item(app: AppHandle, state: State<'_, AppState>, id: String) -> R
                 let _ = app.emit("history-sync", &history);
             }
 
-            PasteHelper::execute_paste_pipeline(&app).await?;
+            let is_text = matches!(item.content, ClipboardContent::Text(_) | ClipboardContent::RichText { .. });
+            let effective_shift = if is_text { shift_held.unwrap_or(false) } else { false };
+
+            PasteHelper::execute_paste_pipeline(&app, effective_shift).await?;
         }
         None => {
             eprintln!(
@@ -208,6 +211,7 @@ async fn paste_text(
     text: String,
     item_type: Option<String>,
     _hide_window: Option<bool>, // Ignored: we always do single-shot paste-and-close now
+    shift_held: Option<bool>,
 ) -> Result<(), String> {
     let _paste_guard = state.paste_gate.lock().await;
 
@@ -225,7 +229,7 @@ async fn paste_text(
         manager.set_text_robust(&text)?;
     }
 
-    PasteHelper::execute_paste_pipeline(&app).await?;
+    PasteHelper::execute_paste_pipeline(&app, shift_held.unwrap_or(false)).await?;
 
     Ok(())
 }
@@ -277,7 +281,7 @@ async fn paste_gif_from_url(
     }
 
     // 3. Prepare Environment & Paste
-    PasteHelper::execute_paste_pipeline(&app).await?;
+    PasteHelper::execute_paste_pipeline(&app, false).await?;
 
     Ok(())
 }
@@ -285,7 +289,7 @@ async fn paste_gif_from_url(
 #[tauri::command]
 async fn finish_paste(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let _paste_guard = state.paste_gate.lock().await;
-    PasteHelper::execute_paste_pipeline(&app).await?;
+    PasteHelper::execute_paste_pipeline(&app, false).await?;
     Ok(())
 }
 
@@ -338,7 +342,7 @@ struct PasteHelper;
 
 impl PasteHelper {
 
-    async fn execute_paste_pipeline(app: &AppHandle) -> Result<(), String> {
+    async fn execute_paste_pipeline(app: &AppHandle, shift_held: bool) -> Result<(), String> {
         // 2. Hide window completely
         WindowController::hide(app);
 
@@ -361,7 +365,7 @@ impl PasteHelper {
         tokio::time::sleep(Duration::from_millis(120)).await;
 
         // 6. Inject keystroke
-        simulate_paste_keystroke().map_err(|e| e.to_string())?;
+        simulate_paste_keystroke(shift_held).map_err(|e| e.to_string())?;
 
         if is_wayland() {
             wayland_clear_saved_window_id();
