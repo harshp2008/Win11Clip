@@ -303,6 +303,18 @@ install: install-extension enable-extension
 	install -Dm644 src-tauri/bundle/linux/$(APP_NAME).desktop $(DESTDIR)$(DATADIR)/applications/
 	@update-desktop-database $(DESTDIR)$(DATADIR)/applications 2>/dev/null || true
 	@gtk-update-icon-cache -f -t $(DESTDIR)$(DATADIR)/icons/hicolor 2>/dev/null || true
+	@# Configure spawn-at runtime and auto-update on login (only on live system, not in DESTDIR/fakeroot)
+	@if [ -z "$$(printf '%s' "$(DESTDIR)")" ]; then \
+		if command -v spawn-at >/dev/null 2>&1; then \
+			spawn-at install --headless --yes --no-action 2>/dev/null || true; \
+		fi; \
+		if [ -n "$$SUDO_USER" ]; then \
+			user_home=$$(getent passwd $$SUDO_USER | cut -d: -f6); \
+			mkdir -p "$$user_home/.config/autostart"; \
+			printf "[Desktop Entry]\nType=Application\nName=spawn-at Auto Update\nExec=sh -c 'sleep 10 && (spawn-at update --headless || ~/.local/bin/spawn-at update --headless || /usr/local/bin/spawn-at update --headless)'\nHidden=false\nNoDisplay=true\nX-GNOME-Autostart-enabled=true\nComment=Automatically check and install spawn-at updates on login\n" > "$$user_home/.config/autostart/spawn-at-autoupdate.desktop"; \
+			chown $$SUDO_USER:$$SUDO_USER "$$user_home/.config/autostart/spawn-at-autoupdate.desktop" 2>/dev/null || true; \
+		fi; \
+	fi
 	@echo -e "$(GREEN)✓ Installed successfully$(RESET)"
 	@echo ""
 	@echo -e "$(GREEN)╔════════════════════════════════════════════════════════════════╗$(RESET)"
@@ -369,12 +381,16 @@ uninstall:
 		AUTOSTART_DIR=$$(getent passwd $$SUDO_USER | cut -d: -f6)/.config/autostart; \
 		rm -f "$$AUTOSTART_DIR/$(APP_NAME).desktop" 2>/dev/null || true; \
 		rm -f "$$AUTOSTART_DIR/win11clip-firstrun.desktop" 2>/dev/null || true; \
+		rm -f "$$AUTOSTART_DIR/spawn-at-autoupdate.desktop" 2>/dev/null || true; \
+		rm -f "$$AUTOSTART_DIR/spawn-at-update-check.desktop" 2>/dev/null || true; \
 	fi
 	@# Also remove for all users
 	@for user_home in /home/*; do \
 		if [ -d "$$user_home" ]; then \
 			rm -f "$$user_home/.config/autostart/$(APP_NAME).desktop" 2>/dev/null || true; \
 			rm -f "$$user_home/.config/autostart/win11clip-firstrun.desktop" 2>/dev/null || true; \
+			rm -f "$$user_home/.config/autostart/spawn-at-autoupdate.desktop" 2>/dev/null || true; \
+			rm -f "$$user_home/.config/autostart/spawn-at-update-check.desktop" 2>/dev/null || true; \
 		fi; \
 	done
 	@update-desktop-database $(DESTDIR)$(DATADIR)/applications 2>/dev/null || true

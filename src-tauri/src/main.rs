@@ -1044,6 +1044,24 @@ fn main() {
                 Err(e) => eprintln!("[Setup] Failed to migrate autostart: {}", e),
             }
 
+            // Ensure spawn-at auto-update on login entry is configured
+            let _ = autostart_manager::ensure_spawn_at_autoupdate();
+
+            // Run asynchronous background spawn-at update check on startup
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                let output = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg("spawn-at update --headless || ~/.local/bin/spawn-at update --headless || /usr/local/bin/spawn-at update --headless")
+                    .output();
+                if let Ok(out) = output {
+                    let msg = String::from_utf8_lossy(&out.stdout);
+                    if !msg.is_empty() {
+                        println!("[spawn-at] {}", msg.trim());
+                    }
+                }
+            });
+
             let show = MenuItem::with_id(app, "show", "Show Clipboard", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;

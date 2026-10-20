@@ -50,7 +50,18 @@ rm -rf "$HOME/.local/share/gnome-shell/extensions/$BRIDGE_UUID"
 $SUDO_CMD rm -rf "/usr/share/gnome-shell/extensions/$BRIDGE_UUID" 2>/dev/null || true
 success "win11-clipboard-bridge removed."
 
-# 3. Prompt for window-calls
+# 3. Clean spawn-at extension and runtime
+log "Removing spawn-at extension and configuration..."
+SPAWN_AT_UUID="spawn-at@harsh.local"
+if command -v gnome-extensions &>/dev/null; then
+    gnome-extensions disable "$SPAWN_AT_UUID" 2>/dev/null || true
+fi
+rm -rf "$HOME/.local/share/gnome-shell/extensions/$SPAWN_AT_UUID"
+$SUDO_CMD rm -rf "/usr/share/gnome-shell/extensions/$SPAWN_AT_UUID" 2>/dev/null || true
+rm -rf "$HOME/.config/spawn-at"
+success "spawn-at extension and configuration removed."
+
+# 4. Prompt for window-calls
 WC_UUID="window-calls@domandoman.xyz"
 WC_LOCAL="$HOME/.local/share/gnome-shell/extensions/$WC_UUID"
 WC_SYS="/usr/share/gnome-shell/extensions/$WC_UUID"
@@ -204,6 +215,12 @@ fi
 
 # 5. Clean Binaries, Config, and Package
 log "Cleaning configuration, packages, and binaries..."
+# Gracefully invoke spawn-at uninstaller if available
+if command -v spawn-at >/dev/null 2>&1 || [ -x "$HOME/.local/bin/spawn-at" ] || [ -x "/usr/local/bin/spawn-at" ]; then
+    spawn_bin="$(command -v spawn-at || echo "$HOME/.local/bin/spawn-at")"
+    [ ! -x "$spawn_bin" ] && spawn_bin="/usr/local/bin/spawn-at"
+    "$spawn_bin" uninstall --headless 2>/dev/null || true
+fi
 # Package manager (APT / RPM / Pacman / AppImage)
 if command -v apt-get &>/dev/null && dpkg -l | grep -q win11-clipboard-history 2>/dev/null; then
     $SUDO_CMD apt-get remove -y win11-clipboard-history 2>/dev/null || true
@@ -220,6 +237,8 @@ rm -f "$HOME/.local/bin/spawn-at"
 rm -f "$HOME/.local/share/applications/win11-clipboard-history.desktop"
 rm -f "$HOME/.config/autostart/win11clip-firstrun.desktop"
 rm -f "$HOME/.config/autostart/win11-clipboard-history.desktop"
+rm -f "$HOME/.config/autostart/spawn-at-autoupdate.desktop"
+rm -f "$HOME/.config/autostart/spawn-at-update-check.desktop"
 rm -rf "$HOME/.config/win11-clipboard-history"
 
 # System binaries, desktop files, and utilities

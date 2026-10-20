@@ -84,7 +84,7 @@ const SHORTCUTS: &[ShortcutConfig] = &[
     ShortcutConfig {
         id: "win11-clipboard-history",
         name: "Clipboard History",
-        command: "spawn-at -o -15 -15 -b 10 win11-clipboard-history", 
+        command: "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history", 
         args: "--clipboard",
         gnome_binding: "<Super>v",
         kde_binding: "Meta+V",
@@ -99,7 +99,7 @@ const SHORTCUTS: &[ShortcutConfig] = &[
     ShortcutConfig {
         id: "win11-clipboard-history-alt",
         name: "Clipboard History (Alt)",
-        command: "spawn-at -o -15 -15 -b 10 win11-clipboard-history", 
+        command: "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history", 
         args: "--clipboard",
         gnome_binding: "<Ctrl><Alt>v",
         kde_binding: "Ctrl+Alt+V",
@@ -114,7 +114,7 @@ const SHORTCUTS: &[ShortcutConfig] = &[
     ShortcutConfig {
         id: "win11-clipboard-history-emoji",
         name: "Emoji Picker",
-        command: "spawn-at -o -15 -15 -b 10 win11-clipboard-history", 
+        command: "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history", 
         args: "--emoji",
         gnome_binding: "<Super>period",
         kde_binding: "Meta+.",
@@ -609,7 +609,31 @@ impl ShortcutHandler for KdeHandler {
         let section_name = format!("Data_{}", s.id.replace('-', "_"));
 
         Utils::modify_file_atomic(&path, |content| {
+            let full_cmd = s.full_command();
             if content.contains(&format!("[{}]", section_name)) {
+                let action_header = format!("[{}/Actions/Action0]", section_name);
+                if content.contains(&action_header) {
+                    let mut lines: Vec<String> = content.lines().map(String::from).collect();
+                    let mut in_action = false;
+                    let mut updated = false;
+                    for line in lines.iter_mut() {
+                        if line.trim() == action_header {
+                            in_action = true;
+                        } else if line.starts_with('[') && in_action {
+                            in_action = false;
+                        } else if in_action && line.starts_with("CommandURL=") {
+                            let expected = format!("CommandURL={}", full_cmd);
+                            if line != &expected {
+                                *line = expected;
+                                updated = true;
+                            }
+                            break;
+                        }
+                    }
+                    if updated {
+                        return Ok(Some(lines.join("\n")));
+                    }
+                }
                 return Ok(None); // Already exists
             }
 
@@ -734,6 +758,18 @@ impl ShortcutHandler for XfceHandler {
                     &s.full_command(),
                 ],
             )?;
+        } else {
+            Utils::run(
+                "xfconf-query",
+                &[
+                    "-c",
+                    "xfce4-keyboard-shortcuts",
+                    "-p",
+                    &property,
+                    "-s",
+                    &s.full_command(),
+                ],
+            )?;
         }
         Ok(())
     }
@@ -779,7 +815,7 @@ impl ShortcutHandler for MateHandler {
                 return Ok(());
             } // Already done
 
-            if current.is_empty() {
+            if current.contains("win11-clipboard-history") || current.is_empty() {
                 let binding_key = format!("run-command-{}", i);
                 let quoted_cmd = format!("'{}'", full_cmd);
                 let quoted_binding = format!("'{}'", s.gnome_binding);
@@ -1074,6 +1110,26 @@ impl ShortcutHandler for LxqtHandler {
 
         Utils::modify_file_atomic(&path, |content| {
             if content.contains(&format!("[{}]", section)) {
+                let mut lines: Vec<String> = content.lines().map(String::from).collect();
+                let mut in_section = false;
+                let mut updated = false;
+                for line in lines.iter_mut() {
+                    if line.trim() == format!("[{}]", section) {
+                        in_section = true;
+                    } else if line.starts_with('[') && in_section {
+                        in_section = false;
+                    } else if in_section && line.starts_with("Exec=") {
+                        let expected = format!("Exec={}", full_cmd);
+                        if line != &expected {
+                            *line = expected;
+                            updated = true;
+                        }
+                        break;
+                    }
+                }
+                if updated {
+                    return Ok(Some(lines.join("\n")));
+                }
                 return Ok(None); // Already exists
             }
 
@@ -1284,8 +1340,22 @@ impl ShortcutHandler for I3Handler {
                 return Ok(None);
             }
 
-            // Check for existing $mod+v binding and comment it out
             let mut lines: Vec<String> = content.lines().map(String::from).collect();
+            let mut updated_existing = false;
+
+            // If an old win11-clipboard-history binding line exists for this binding, update it
+            for line in lines.iter_mut() {
+                if line.contains("win11-clipboard-history") && line.contains("bindsym") && line.contains(s.i3_binding) {
+                    *line = binding_line.clone();
+                    updated_existing = true;
+                    break;
+                }
+            }
+
+            if updated_existing {
+                return Ok(Some(lines.join("\n")));
+            }
+
             let mut had_existing = false;
 
             for line in lines.iter_mut() {
@@ -1415,6 +1485,21 @@ impl ShortcutHandler for SwayHandler {
             }
 
             let mut lines: Vec<String> = content.lines().map(String::from).collect();
+            let mut updated_existing = false;
+
+            // If an old win11-clipboard-history binding line exists for this binding, update it
+            for line in lines.iter_mut() {
+                if line.contains("win11-clipboard-history") && line.contains("bindsym") && line.contains(s.sway_binding) {
+                    *line = binding_line.clone();
+                    updated_existing = true;
+                    break;
+                }
+            }
+
+            if updated_existing {
+                return Ok(Some(lines.join("\n")));
+            }
+
             let mut had_existing = false;
 
             for line in lines.iter_mut() {
@@ -1529,6 +1614,21 @@ impl ShortcutHandler for HyprlandHandler {
             }
 
             let mut lines: Vec<String> = content.lines().map(String::from).collect();
+            let mut updated_existing = false;
+
+            // If an old win11-clipboard-history binding line exists for this binding, update it
+            for line in lines.iter_mut() {
+                if line.contains("win11-clipboard-history") && line.contains("bind") && line.contains(&s.hyprland_binding) {
+                    *line = binding_line.clone();
+                    updated_existing = true;
+                    break;
+                }
+            }
+
+            if updated_existing {
+                return Ok(Some(lines.join("\n")));
+            }
+
             let mut modified = false;
 
             for line in lines.iter_mut() {

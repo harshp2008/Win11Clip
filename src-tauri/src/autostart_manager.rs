@@ -21,6 +21,16 @@ StartupNotify=false
 X-GNOME-Autostart-enabled=true
 "#;
 
+const SPAWN_AT_AUTOUPDATE_TEMPLATE: &str = r#"[Desktop Entry]
+Type=Application
+Name=spawn-at Auto Update
+Exec=sh -c 'sleep 10 && (spawn-at update --headless || ~/.local/bin/spawn-at update --headless || /usr/local/bin/spawn-at update --headless)'
+Hidden=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+Comment=Automatically check and install spawn-at updates on login
+"#;
+
 /// Get the path to the autostart directory
 fn get_autostart_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|p| p.join("autostart"))
@@ -86,6 +96,9 @@ pub fn autostart_enable() -> Result<(), String> {
         "[Autostart] Enabled autostart with exec path: {}",
         exec_path
     );
+
+    // Also ensure spawn-at auto-update on login entry is deployed
+    let _ = ensure_spawn_at_autoupdate();
 
     Ok(())
 }
@@ -183,5 +196,51 @@ pub fn autostart_migrate() -> Result<bool, String> {
         return Ok(true); // Migration performed
     }
 
+    // Ensure spawn-at auto-update is configured even if no Win11Clip migration was needed
+    let _ = ensure_spawn_at_autoupdate();
+
     Ok(false) // No migration needed
+}
+
+/// Ensures the spawn-at auto-update autostart desktop entry is present and properly configured.
+/// This runs silently on user login to check GitHub for updates and automatically upgrades spawn-at.
+pub fn ensure_spawn_at_autoupdate() -> Result<(), String> {
+    let autostart_dir = match get_autostart_dir() {
+        Some(dir) => dir,
+        None => return Ok(()),
+    };
+
+    if !autostart_dir.exists() {
+        fs::create_dir_all(&autostart_dir)
+            .map_err(|e| format!("Failed to create autostart directory: {}", e))?;
+    }
+
+    // Update spawn-at-update-check.desktop if it was generated with only --check
+    let check_file = autostart_dir.join("spawn-at-update-check.desktop");
+    if check_file.exists() {
+        if let Ok(content) = fs::read_to_string(&check_file) {
+            if content.contains("--check") {
+                let updated = content.replace(" update --check --headless", " update --headless");
+                let _ = fs::write(&check_file, updated);
+            }
+        }
+    }
+
+    // Write dedicated spawn-at-autoupdate.desktop
+    let autoupdate_file = autostart_dir.join("spawn-at-autoupdate.desktop");
+    let needs_write = match fs::read_to_string(&autoupdate_file) {
+        Ok(c) => c.trim() != SPAWN_AT_AUTOUPDATE_TEMPLATE.trim(),
+        Err(_) => true,
+    };
+
+    if needs_write {
+        fs::write(&autoupdate_file, SPAWN_AT_AUTOUPDATE_TEMPLATE)
+            .map_err(|e| format!("Failed to write spawn-at autoupdate file: {}", e))?;
+        println!(
+            "[Autostart] Configured spawn-at auto-update on login at {}",
+            autoupdate_file.display()
+        );
+    }
+
+    Ok(())
 }

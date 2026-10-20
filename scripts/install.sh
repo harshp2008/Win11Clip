@@ -698,29 +698,81 @@ launch_app() {
 
 install_spawn_at() {
     log "Installing spawn-at utility..."
+    local installed_bin=""
+    local spawn_ext_dir="$HOME/.local/share/gnome-shell/extensions/spawn-at@harsh.local"
+    local spawn_ext_existed=false
+    [ -f "$spawn_ext_dir/metadata.json" ] && spawn_ext_existed=true
+
     if [ -f "bundled-deps/bin/spawn-at" ]; then
-        sudo install -Dm755 bundled-deps/bin/spawn-at /usr/local/bin/spawn-at
+        if sudo install -Dm755 bundled-deps/bin/spawn-at /usr/local/bin/spawn-at 2>/dev/null; then
+            installed_bin="/usr/local/bin/spawn-at"
+        fi
+        mkdir -p "$HOME/.local/bin"
+        install -Dm755 bundled-deps/bin/spawn-at "$HOME/.local/bin/spawn-at" 2>/dev/null || cp -f bundled-deps/bin/spawn-at "$HOME/.local/bin/spawn-at"
+        chmod 755 "$HOME/.local/bin/spawn-at" 2>/dev/null || true
+        [ -z "$installed_bin" ] && installed_bin="$HOME/.local/bin/spawn-at"
     elif [ -f "../bundled-deps/bin/spawn-at" ]; then
-        sudo install -Dm755 ../bundled-deps/bin/spawn-at /usr/local/bin/spawn-at
+        if sudo install -Dm755 ../bundled-deps/bin/spawn-at /usr/local/bin/spawn-at 2>/dev/null; then
+            installed_bin="/usr/local/bin/spawn-at"
+        fi
+        mkdir -p "$HOME/.local/bin"
+        install -Dm755 ../bundled-deps/bin/spawn-at "$HOME/.local/bin/spawn-at" 2>/dev/null || cp -f ../bundled-deps/bin/spawn-at "$HOME/.local/bin/spawn-at"
+        chmod 755 "$HOME/.local/bin/spawn-at" 2>/dev/null || true
+        [ -z "$installed_bin" ] && installed_bin="$HOME/.local/bin/spawn-at"
     else
-        local fetched=false
-        local owners=("$REPO_OWNER" "harshp2008")
-        local repos=("$REPO_NAME" "Windows-11-Clipboard-History-For-Linux")
-        for owner in "${owners[@]}"; do
-            for repo in "${repos[@]}"; do
-                local SPAWN_AT_URL="https://raw.githubusercontent.com/$owner/$repo/master/bundled-deps/bin/spawn-at"
-                if sudo curl -fsSL -o /usr/local/bin/spawn-at "$SPAWN_AT_URL" 2>/dev/null; then
-                    fetched=true
-                    break 2
-                fi
-            done
-        done
-        if [ "$fetched" = false ]; then
-            error "Failed to download spawn-at"
+        log "Downloading latest spawn-at release from official repository..."
+        if curl -fsSL https://raw.githubusercontent.com/harshp2008/spawn-at/main/install.sh | bash -s -- --headless --yes --no-action; then
+            installed_bin="$(command -v spawn-at || echo "$HOME/.local/bin/spawn-at")"
+        else
+            error "Failed to install spawn-at from official installer"
         fi
     fi
-    sudo chmod 755 /usr/local/bin/spawn-at
-    success "spawn-at installed to /usr/local/bin/spawn-at"
+
+    # Also install to ~/.local/bin/spawn-at for unprivileged user updates if needed
+    if [ -n "$installed_bin" ] && [ -f "$installed_bin" ]; then
+        mkdir -p "$HOME/.local/bin"
+        cp -f "$installed_bin" "$HOME/.local/bin/spawn-at" 2>/dev/null || true
+        chmod 755 "$HOME/.local/bin/spawn-at" 2>/dev/null || true
+    fi
+
+    sudo chmod 755 /usr/local/bin/spawn-at 2>/dev/null || true
+
+    # Run spawn-at install to deploy and enable embedded GNOME Shell extension
+    if command -v spawn-at &>/dev/null || [ -x "$HOME/.local/bin/spawn-at" ] || [ -x "/usr/local/bin/spawn-at" ]; then
+        local spawn_at_exe
+        spawn_at_exe="$(command -v spawn-at || echo "$HOME/.local/bin/spawn-at")"
+        [ ! -x "$spawn_at_exe" ] && spawn_at_exe="/usr/local/bin/spawn-at"
+        if [ -x "$spawn_at_exe" ]; then
+            log "Configuring spawn-at extension and runtime..."
+            "$spawn_at_exe" install --headless --yes --no-action 2>/dev/null || true
+        fi
+    fi
+
+    if [ "$spawn_ext_existed" = false ] && [ -f "$spawn_ext_dir/metadata.json" ]; then
+        EXTENSIONS_MODIFIED=1
+        RESTART_NEEDED=1
+    fi
+
+    # Configure auto-update on login
+    local autostart_dir="$HOME/.config/autostart"
+    mkdir -p "$autostart_dir"
+    cat > "$autostart_dir/spawn-at-autoupdate.desktop" << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=spawn-at Auto Update
+Exec=sh -c 'sleep 10 && (spawn-at update --headless || ~/.local/bin/spawn-at update --headless || /usr/local/bin/spawn-at update --headless)'
+Hidden=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+Comment=Automatically check and install spawn-at updates on login
+EOF
+
+    # If spawn-at install created spawn-at-update-check.desktop with --check, ensure it updates directly
+    if [ -f "$autostart_dir/spawn-at-update-check.desktop" ]; then
+        sed -i 's/ update --check --headless/ update --headless/g' "$autostart_dir/spawn-at-update-check.desktop" 2>/dev/null || true
+    fi
+
+    success "spawn-at installed and auto-update configured at login"
 }
 
 install_uninstaller() {
@@ -901,8 +953,8 @@ configure_gnome_shortcuts() {
 
     log "Configuring GNOME custom shortcuts..."
 
-    local target_cb_cmd="spawn-at -o -15 -15 -b 10 win11-clipboard-history --clipboard"
-    local target_emoji_cmd="spawn-at -o -15 -15 -b 10 win11-clipboard-history --emoji"
+    local target_cb_cmd="spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard"
+    local target_emoji_cmd="spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --emoji"
 
     local raw_bindings
     raw_bindings=$(run_user_gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null || echo "[]")
@@ -991,7 +1043,7 @@ setup_post_login_enable() {
 [Desktop Entry]
 Type=Application
 Name=Win11Clip First-Run Setup
-Exec=sh -c 'sleep 3 && gnome-extensions enable win11-clipboard-bridge@harshp2008.github.com && gnome-extensions enable window-calls@domandoman.xyz && win11-clipboard-history & sleep 1 && for i in 1 2 3 4 5; do gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/Windows --method org.gnome.Shell.Extensions.Windows.Focus "win11-clipboard-history" 2>/dev/null && break; sleep 0.2; done; rm -f ~/.config/autostart/win11clip-firstrun.desktop'
+Exec=sh -c 'sleep 3 && gnome-extensions enable win11-clipboard-bridge@harshp2008.github.com && gnome-extensions enable window-calls@domandoman.xyz && gnome-extensions enable spawn-at@harsh.local && win11-clipboard-history & sleep 1 && for i in 1 2 3 4 5; do gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/Windows --method org.gnome.Shell.Extensions.Windows.Focus "win11-clipboard-history" 2>/dev/null && break; sleep 0.2; done; rm -f ~/.config/autostart/win11clip-firstrun.desktop'
 Hidden=false
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
@@ -1030,6 +1082,7 @@ check_if_restart_required() {
     local exts=(
         "win11-clipboard-bridge@harshp2008.github.com"
         "window-calls@domandoman.xyz"
+        "spawn-at@harsh.local"
     )
     
     for ext in "${exts[@]}"; do
@@ -1106,6 +1159,7 @@ main() {
         if [[ "$XDG_CURRENT_DESKTOP" == *"GNOME"* ]] && command -v gnome-extensions >/dev/null 2>&1; then
             gnome-extensions enable win11-clipboard-bridge@harshp2008.github.com 2>/dev/null || true
             gnome-extensions enable window-calls@domandoman.xyz 2>/dev/null || true
+            gnome-extensions enable spawn-at@harsh.local 2>/dev/null || true
         fi
         
         # Clean up any previous firstrun hook just in case
