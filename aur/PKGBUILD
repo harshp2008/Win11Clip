@@ -1,10 +1,12 @@
-# Maintainer: Gustavo Sett <gustaavoribeeiro@hotmail.com>
+# Maintainer: Harsh Patel (harshp2008)
+# Packages the .deb from this repository's own GitHub releases. Not published to the AUR from here:
+# the AUR name win11-clipboard-history-bin belongs to the upstream project (gustavosett).
 pkgname=win11-clipboard-history-bin
 pkgver=0.7.3
 pkgrel=1
 pkgdesc="Windows 11-style Clipboard History Manager for Linux"
 arch=('x86_64' 'aarch64')
-url="https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux"
+url="https://github.com/harshp2008/Win11Clip"
 license=('MIT')
 depends=(
     'webkit2gtk-4.1'

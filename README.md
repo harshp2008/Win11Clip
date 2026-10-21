@@ -58,7 +58,9 @@ To force a local build from source during installation:
 ./scripts/install.sh --build
 ```
 
-The installer needs nothing pre-installed beyond `curl` and `sudo`. By default it installs the prebuilt `.deb` from this repository's latest GitHub release (plus any missing runtime packages via `apt`, asking for `sudo` once). If no usable release exists, or with `--build`, it builds from source: system libraries come from `apt`, while Node.js (nvm) and Rust (rustup) are installed in your home folder without `sudo`, and only if you don't already have them. To see exactly what it would do first:
+The installer needs nothing pre-installed beyond `curl` and `sudo`. By default it installs the prebuilt `.deb` from this repository's latest GitHub release (plus any missing runtime packages via `apt`, asking for `sudo` once). If no usable release exists, or with `--build`, it builds from source: system libraries come from `apt`, while Node.js (nvm) and Rust (rustup) are installed in your home folder without `sudo`, and only if you don't already have them. **Arch Linux is not supported by the installer yet.** On Arch it stops with an explanation and installs nothing; in particular it does not install the AUR package `win11-clipboard-history-bin`, which is maintained by the upstream project and does not contain this project's fixes.
+
+To see exactly what it would do first:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/harshp2008/Win11Clip/master/scripts/install.sh | bash -s -- --dry-run

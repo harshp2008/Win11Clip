@@ -400,8 +400,7 @@ install_via_package_manager() {
     # 4. Check for Arch Family (Arch, Manjaro, CachyOS, Endeavour, etc)
     # Check this AFTER other distros to avoid false positives from pacman being installed
     elif [[ "$SYSTEM_FAMILY_INFO" =~ "arch" ]]; then
-        install_aur
-        return 0
+        arch_not_supported
     fi
     
     # Fallback: Check for package managers if distro detection failed
@@ -416,8 +415,7 @@ install_via_package_manager() {
         install_rpm_suse
         return 0
     elif command -v pacman &>/dev/null; then
-        install_aur
-        return 0
+        arch_not_supported
     fi
 
     return 1  # Unknown system family
@@ -531,23 +529,20 @@ install_rpm_suse() {
     success "Installed via Zypper (from GitHub release)"
 }
 
-install_aur() {
-    log "Installing from AUR..."
-    
-    # Detect AUR helper
-    if command -v yay &>/dev/null; then
-        yay -S --noconfirm win11-clipboard-history-bin
-    elif command -v paru &>/dev/null; then
-        paru -S --noconfirm win11-clipboard-history-bin
-    else
-        warn "No AUR helper found. Installing yay first..."
-        sudo pacman -S --needed --noconfirm git base-devel
-        git clone https://aur.archlinux.org/yay-bin.git /tmp/yay-bin
-        cd /tmp/yay-bin && makepkg -si --noconfirm
-        yay -S --noconfirm win11-clipboard-history-bin
-    fi
-    
-    success "Installed via AUR!"
+# Arch is not supported yet. The AUR package win11-clipboard-history-bin is upstream's
+# (gustavosett's build, without this project's fixes), not this project's, so it is never installed
+# from here; this project publishes no AUR package of its own.
+arch_not_supported() {
+    echo ""
+    warn "Arch Linux (pacman) is not supported by this installer yet, so nothing was installed."
+    echo "    The AUR package win11-clipboard-history-bin is maintained by the upstream project"
+    echo "    (gustavosett), not by Win11Clip, and it lacks this project's fixes. It is not installed."
+    echo "    What you can do today:"
+    echo "      - Use the AppImage from https://github.com/$REPO_OWNER/$REPO_NAME/releases"
+    echo "        (some features are disabled in it; see the README), or"
+    echo "      - Build from source by hand (README, Development)."
+    echo ""
+    error "Arch Linux is not supported yet."
 }
 
 install_appimage() {
@@ -841,7 +836,7 @@ print_plan() {
     if [ "$BUILD_FROM_SOURCE" = true ]; then
         mode="build from source (--build)"
     elif [[ "$SYSTEM_FAMILY_INFO" =~ arch ]]; then
-        mode="AUR package"
+        mode="not supported yet on Arch: the installer stops without installing anything (the AUR package of that name is upstream's)"
     elif release_is_usable "$ext"; then
         echo "  Release     : $RELEASE_TAG -> $(release_asset_url "$ext")"
     else
@@ -1640,6 +1635,11 @@ main() {
     if [ "$DRY_RUN" = true ]; then
         print_plan
         exit 0
+    fi
+
+    # Stop before anything is changed (an existing AppImage install is cleaned up further down).
+    if [ "$BUILD_FROM_SOURCE" != true ] && [[ "$SYSTEM_FAMILY_INFO" =~ arch ]]; then
+        arch_not_supported
     fi
     
     # Check WebKitGTK compatibility
