@@ -130,12 +130,12 @@ WC_UUID="window-calls@domandoman.xyz"
 WC_LOCAL="$HOME/.local/share/gnome-shell/extensions/$WC_UUID"
 # Copies of a window-calls that was already installed before install.sh replaced it (oldest first;
 # the oldest is the one you had originally).
+# Found in the backup folder itself (not the manifest, which this script deletes), so it also
+# works on a later run.
 WC_BACKUPS=()
-if [ -f "$MANIFEST" ]; then
-    while IFS= read -r line; do
-        [ -d "${line#replaced-window-calls:}" ] && WC_BACKUPS+=("${line#replaced-window-calls:}")
-    done < <(grep '^replaced-window-calls:' "$MANIFEST")
-fi
+for d in "$BACKUP_DIR"/window-calls/*/; do
+    [ -d "$d" ] && WC_BACKUPS+=("${d%/}")
+done
 if [ -d "$WC_LOCAL" ]; then
     echo ""
     echo "window-calls is a shared GNOME extension that install.sh deployed (patched build)."
