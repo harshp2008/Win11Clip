@@ -20,9 +20,13 @@ path = "src/main.rs"
 tauri-build = { version = "2.6.0", features = [] }
 
 [dependencies]
-# Tauri Core
-tauri = { version = "2.11.0", features = ["tray-icon", "image-png"] }
-tauri-plugin-shell = "2"
+# Tauri Core. Keep these on the same minor as the @tauri-apps/* packages in
+# package.json: the Tauri CLI refuses to build when the two sides differ.
+# Cargo.lock also holds tauri's internal crates (tauri-runtime, tauri-utils,
+# tauri-macros, ...) at the 2.11-era versions; a bare `cargo update` pulls the
+# 2.12 ones, which don't compile against tauri 2.11. Bump npm and Rust together.
+tauri = { version = "~2.11.0", features = ["tray-icon", "image-png"] }
+tauri-plugin-shell = "~2.3.5"
 
 # Clipboard Management - wayland-data-control for native Wayland support
 arboard = { version = "3.4", features = ["image-data", "wayland-data-control"] }
@@ -51,7 +55,7 @@ dirs = "6.0"
 tauri-plugin-single-instance = "2.4.2"
 
 # Global shortcut plugin for cross-platform hotkeys
-tauri-plugin-global-shortcut = "2"
+tauri-plugin-global-shortcut = "~2.3.2"
 
 # System information
 whoami = "2.1.2"
