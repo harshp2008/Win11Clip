@@ -50,34 +50,34 @@ rm -rf "$HOME/.local/share/gnome-shell/extensions/$BRIDGE_UUID"
 $SUDO_CMD rm -rf "/usr/share/gnome-shell/extensions/$BRIDGE_UUID" 2>/dev/null || true
 success "win11-clipboard-bridge removed."
 
-# 3. Clean spawn-at extension and runtime
-log "Removing spawn-at extension and configuration..."
-SPAWN_AT_UUID="spawn-at@harsh.local"
-if command -v gnome-extensions &>/dev/null; then
-    gnome-extensions disable "$SPAWN_AT_UUID" 2>/dev/null || true
+# 3. Prompt for spawn-at removal
+SPAWN_AT_BIN=""
+if command -v spawn-at &>/dev/null; then
+    SPAWN_AT_BIN=$(command -v spawn-at)
+elif [ -x "$HOME/.local/bin/spawn-at" ]; then
+    SPAWN_AT_BIN="$HOME/.local/bin/spawn-at"
+elif [ -x "/usr/local/bin/spawn-at" ]; then
+    SPAWN_AT_BIN="/usr/local/bin/spawn-at"
+elif [ -x "/usr/bin/spawn-at" ]; then
+    SPAWN_AT_BIN="/usr/bin/spawn-at"
 fi
-rm -rf "$HOME/.local/share/gnome-shell/extensions/$SPAWN_AT_UUID"
-$SUDO_CMD rm -rf "/usr/share/gnome-shell/extensions/$SPAWN_AT_UUID" 2>/dev/null || true
-rm -rf "$HOME/.config/spawn-at"
-success "spawn-at extension and configuration removed."
 
-# 4. Prompt for window-calls
-WC_UUID="window-calls@domandoman.xyz"
-WC_LOCAL="$HOME/.local/share/gnome-shell/extensions/$WC_UUID"
-WC_SYS="/usr/share/gnome-shell/extensions/$WC_UUID"
+SPAWN_AT_UUID="spawn-at@harsh.local"
+SPAWN_AT_LOCAL_EXT="$HOME/.local/share/gnome-shell/extensions/$SPAWN_AT_UUID"
+SPAWN_AT_SYS_EXT="/usr/share/gnome-shell/extensions/$SPAWN_AT_UUID"
 
-if [ -d "$WC_LOCAL" ] || [ -d "$WC_SYS" ]; then
+if [ -n "$SPAWN_AT_BIN" ] || [ -d "$SPAWN_AT_LOCAL_EXT" ] || [ -d "$SPAWN_AT_SYS_EXT" ]; then
     echo ""
     echo -e "${C_CYAN}┌──────────────────────────────────────────────────────────────┐${C_RESET}"
-    echo -e "${C_CYAN}│${C_RESET}  ${C_BOLD}Component: window-calls extension${C_RESET}                           ${C_CYAN}│${C_RESET}"
-    echo -e "${C_CYAN}│${C_RESET}  This extension may be used by other GNOME tools.            ${C_CYAN}│${C_RESET}"
+    echo -e "${C_CYAN}│${C_RESET}  ${C_BOLD}Component: spawn-at${C_RESET}                                         ${C_CYAN}│${C_RESET}"
+    echo -e "${C_CYAN}│${C_RESET}  This tool may be used by other applications or shortcuts.   ${C_CYAN}│${C_RESET}"
     echo -e "${C_CYAN}└──────────────────────────────────────────────────────────────┘${C_RESET}"
     echo ""
 
-    prompt_window_calls_removal() {
+    prompt_spawn_at_removal() {
         local options=(
-            "Keep window-calls (Recommended if used by other tools)"
-            "Remove window-calls"
+            "Keep spawn-at (Recommended if used by other tools)"
+            "Remove spawn-at"
         )
         local selected=0
         local count=${#options[@]}
@@ -88,7 +88,7 @@ if [ -d "$WC_LOCAL" ] || [ -d "$WC_SYS" ]; then
             exec 3</dev/tty
             tty_in=3
         elif [ ! -t 0 ]; then
-            echo -e "${C_YELLOW}[!] Non-interactive session. Keeping window-calls.${C_RESET}"
+            echo -e "${C_YELLOW}[!] Non-interactive session. Keeping spawn-at.${C_RESET}"
             return 0
         fi
 
@@ -149,19 +149,28 @@ if [ -d "$WC_LOCAL" ] || [ -d "$WC_SYS" ]; then
     }
 
     selected=0
-    prompt_window_calls_removal || selected=$?
+    prompt_spawn_at_removal || selected=$?
     echo ""
 
     if [ "$selected" -eq 1 ]; then
-        log "Removing window-calls..."
-        if command -v gnome-extensions &>/dev/null; then
-            gnome-extensions disable "$WC_UUID" 2>/dev/null || true
+        log "Removing spawn-at..."
+        if [ -n "$SPAWN_AT_BIN" ] && [ -x "$SPAWN_AT_BIN" ]; then
+            "$SPAWN_AT_BIN" uninstall --headless --gnome-delete-files true 2>/dev/null || true
         fi
-        rm -rf "$WC_LOCAL"
-        $SUDO_CMD rm -rf "$WC_SYS" 2>/dev/null || true
-        success "window-calls removed."
+
+        if command -v gnome-extensions &>/dev/null; then
+            gnome-extensions disable "$SPAWN_AT_UUID" 2>/dev/null || true
+        fi
+        rm -rf "$SPAWN_AT_LOCAL_EXT"
+        $SUDO_CMD rm -rf "$SPAWN_AT_SYS_EXT" 2>/dev/null || true
+        rm -f "$HOME/.local/bin/spawn-at"
+        $SUDO_CMD rm -f "/usr/local/bin/spawn-at" "/usr/bin/spawn-at" 2>/dev/null || true
+        rm -rf "$HOME/.config/spawn-at"
+        rm -f "$HOME/.config/autostart/spawn-at-autoupdate.desktop"
+        rm -f "$HOME/.config/autostart/spawn-at-update-check.desktop"
+        success "spawn-at removed."
     else
-        success "Kept window-calls extension."
+        success "Kept spawn-at."
     fi
 fi
 
@@ -215,12 +224,6 @@ fi
 
 # 5. Clean Binaries, Config, and Package
 log "Cleaning configuration, packages, and binaries..."
-# Gracefully invoke spawn-at uninstaller if available
-if command -v spawn-at >/dev/null 2>&1 || [ -x "$HOME/.local/bin/spawn-at" ] || [ -x "/usr/local/bin/spawn-at" ]; then
-    spawn_bin="$(command -v spawn-at || echo "$HOME/.local/bin/spawn-at")"
-    [ ! -x "$spawn_bin" ] && spawn_bin="/usr/local/bin/spawn-at"
-    "$spawn_bin" uninstall --headless 2>/dev/null || true
-fi
 # Package manager (APT / RPM / Pacman / AppImage)
 if command -v apt-get &>/dev/null && dpkg -l | grep -q win11-clipboard-history 2>/dev/null; then
     $SUDO_CMD apt-get remove -y win11-clipboard-history 2>/dev/null || true
@@ -233,12 +236,9 @@ fi
 # AppImage and user-local files
 rm -f "$HOME/.local/bin/win11-clipboard-history.AppImage"
 rm -f "$HOME/.local/bin/win11-clipboard-history"
-rm -f "$HOME/.local/bin/spawn-at"
 rm -f "$HOME/.local/share/applications/win11-clipboard-history.desktop"
 rm -f "$HOME/.config/autostart/win11clip-firstrun.desktop"
 rm -f "$HOME/.config/autostart/win11-clipboard-history.desktop"
-rm -f "$HOME/.config/autostart/spawn-at-autoupdate.desktop"
-rm -f "$HOME/.config/autostart/spawn-at-update-check.desktop"
 rm -rf "$HOME/.config/win11-clipboard-history"
 
 # System binaries, desktop files, and utilities
@@ -247,7 +247,6 @@ for target in \
     "/usr/bin/win11-clipboard-history-bin" \
     "/usr/local/bin/win11-clipboard-history" \
     "/usr/local/bin/win11-clipboard-history-bin" \
-    "/usr/local/bin/spawn-at" \
     "/usr/local/bin/win11-clipboard-uninstall" \
     "/usr/share/applications/win11-clipboard-history.desktop" \
     "/usr/local/share/applications/win11-clipboard-history.desktop"; do
