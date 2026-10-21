@@ -29,7 +29,6 @@ let pendingEnvPromise: Promise<RenderingEnv> | null = null
  *
  * When `transparency_disabled` is `true` the caller should:
  *   - Force opacity to 1 (fully opaque)
- *   - Remove rounded outer corners (use `rounded-none`)
  *   - Disable the transparency sliders in Settings
  */
 export function useRenderingEnv() {

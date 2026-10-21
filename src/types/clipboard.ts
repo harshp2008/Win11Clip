@@ -93,7 +93,7 @@ export interface RenderingEnv {
   is_nvidia: boolean
   /** true when running from an AppImage */
   is_appimage: boolean
-  /** true when transparency & rounded corners must be disabled */
+  /** true when transparency must be disabled */
   transparency_disabled: boolean
   /** Human-readable reason shown in Settings UI */
   reason: string

@@ -288,8 +288,7 @@ function ClipboardApp() {
   return (
     <div
       className={clsx(
-        'h-screen w-screen overflow-hidden flex flex-col select-none',
-        renderingEnv.transparency_disabled ? 'rounded-none' : 'rounded-win11-lg',
+        'h-screen w-screen overflow-hidden flex flex-col select-none rounded-win11-lg border border-black/10 dark:border-white/10',
         isDark ? 'glass-effect' : 'glass-effect-light',
         isDark ? 'bg-win11-acrylic-bg' : 'bg-win11Light-acrylic-bg',
         isDark ? 'text-win11-text-primary' : 'text-win11Light-text-primary'

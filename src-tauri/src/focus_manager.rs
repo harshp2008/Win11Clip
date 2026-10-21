@@ -332,6 +332,19 @@ struct WcWindow {
     focus: bool,
 }
 
+impl WcWindow {
+    #[inline]
+    pub fn is_clipboard(&self) -> bool {
+        let cls = self.wm_class.to_lowercase();
+        let title = self.title.to_lowercase();
+        (cls == "win11-clipboard-history"
+            || cls == "win11-clipboard-history-bin"
+            || cls.starts_with("win11-clipboard")
+            || title == "clipboard history")
+            && !title.contains("settings")
+    }
+}
+
 use parking_lot::Mutex;
 use std::collections::VecDeque;
 
@@ -442,7 +455,7 @@ pub fn wayland_save_focused_window_id() {
     match wc_call_list() {
         Ok(windows) => {
             // If clipboard history window itself currently has focus, NEVER push or overwrite.
-            if windows.iter().any(|w| w.focus && w.wm_class == WC_CLIPBOARD_WM_CLASS) {
+            if windows.iter().any(|w| w.focus && w.is_clipboard()) {
                 eprintln!(
                     "[FocusManager] Clipboard history already has focus, preserving focus history: {:?}",
                     *FOCUS_HISTORY.lock()
@@ -453,7 +466,7 @@ pub fn wayland_save_focused_window_id() {
             // Prefer the window that currently has focus.
             let target = windows
                 .iter()
-                .find(|w| w.focus && w.wm_class != WC_CLIPBOARD_WM_CLASS);
+                .find(|w| w.focus && !w.is_clipboard());
 
             if let Some(win) = target {
                 wayland_push_focus_history(win.id, win.wm_class.clone());
@@ -465,7 +478,7 @@ pub fn wayland_save_focused_window_id() {
                 // If no window reports focus=true (rare), fallback only if stack is empty.
                 let existing = wayland_get_saved_window_id();
                 if existing == 0 {
-                    if let Some(win) = windows.iter().find(|w| w.wm_class != WC_CLIPBOARD_WM_CLASS) {
+                    if let Some(win) = windows.iter().find(|w| !w.is_clipboard()) {
                         wayland_push_focus_history(win.id, win.wm_class.clone());
                         eprintln!(
                             "[FocusManager] Fallback saved target window id={} class='{}'",
@@ -512,10 +525,16 @@ pub fn wayland_activate_window_id(winid: u64) -> Result<(), String> {
 /// from the window-calls extension which maps directly to Mutter's `meta_window_make_above()`.
 pub fn wayland_set_keep_above(winid: u64, above: bool) -> Result<(), String> {
     // Attempt our custom bridge first
-    let _ = gnome_extension_set_keep_above(winid, above);
+    let bridge_res = gnome_extension_set_keep_above(winid, above);
 
     let method = if above { "MakeAbove" } else { "UnmakeAbove" };
-    wc_call_winid(method, winid)
+    let wc_res = wc_call_winid(method, winid);
+
+    if wc_res.is_ok() || bridge_res.is_ok() {
+        Ok(())
+    } else {
+        wc_res
+    }
 }
 
 /// Invokes the custom GNOME Shell extension's SetAlwaysOnTop method.
@@ -580,15 +599,12 @@ pub fn gnome_extension_force_pin() -> Result<(), String> {
 }
 
 /// Looks up the clipboard window ID from the live window list.
-/// Matches the first window with `wm_class == "win11-clipboard-history"`
-/// whose title does NOT contain "Settings".
+/// Matches the clipboard history main window (handling both wrapper and binary names).
 pub fn wayland_get_clipboard_window_id() -> Result<u64, String> {
     let windows = wc_call_list()?;
     windows
         .iter()
-        .find(|w| {
-            w.wm_class == WC_CLIPBOARD_WM_CLASS && !w.title.to_lowercase().contains("settings")
-        })
+        .find(|w| w.is_clipboard())
         .map(|w| {
             eprintln!("[FocusManager] Clipboard window id={}", w.id);
             w.id

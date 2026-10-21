@@ -46,11 +46,8 @@ static RENDERING_ENV: OnceLock<RenderingEnv> = OnceLock::new();
 /// 3. `lspci` output mentions an NVIDIA VGA controller.
 fn detect_nvidia() -> bool {
     // 1. Explicit env override
-    if std::env::var("IS_NVIDIA")
-        .map(|v| v == "1")
-        .unwrap_or(false)
-    {
-        return true;
+    if let Ok(v) = std::env::var("IS_NVIDIA") {
+        return v == "1" || v.eq_ignore_ascii_case("true");
     }
 
     // 2. Check loaded kernel modules (fast, no subprocess)
@@ -88,11 +85,8 @@ fn detect_nvidia() -> bool {
 /// `.AppImage` file path.  We also accept the explicit `IS_APPIMAGE=1`
 /// override that the wrapper may set.
 fn detect_appimage() -> bool {
-    if std::env::var("IS_APPIMAGE")
-        .map(|v| v == "1")
-        .unwrap_or(false)
-    {
-        return true;
+    if let Ok(v) = std::env::var("IS_APPIMAGE") {
+        return v == "1" || v.eq_ignore_ascii_case("true");
     }
     // The standard AppImage runtime sets $APPIMAGE
     std::env::var("APPIMAGE")
