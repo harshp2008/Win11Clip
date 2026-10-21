@@ -41,6 +41,8 @@ MANIFEST="$MANIFEST_DIR/installer-manifest"
 # Copies of anything this installer removes with your consent, so uninstall.sh can restore or report it.
 # Not under ~/.config/win11-clipboard-history: uninstall.sh wipes that folder.
 BACKUP_DIR="$HOME/.local/state/win11clip-installer/backup"
+# The one-time first-login check (see setup_post_login_enable) and its log live here too.
+FIRSTRUN_SCRIPT="$HOME/.local/state/win11clip-installer/firstrun.sh"
 
 # Leftovers of older installers that added gustavosett's upstream package repository.
 LEGACY_APT_LIST="/etc/apt/sources.list.d/gustavosett-clipboard-manager.list"
@@ -887,6 +889,7 @@ print_plan() {
     echo "  Shortcuts   : Super+V, Ctrl+Alt+V, Super+. via GNOME custom keybindings"
     if [[ "${XDG_SESSION_TYPE:-}" == "wayland" ]]; then
         echo "  Note        : on Wayland, newly installed or updated GNOME extensions only load after you log out and back in."
+        echo "  After login : a one-time check (autostart) reports in plain English if an extension did not load; log: ~/.local/state/win11clip-installer/firstrun.log"
     fi
     echo "  sudo        : needed once for apt and for installing under /usr"
     echo ""
@@ -1359,29 +1362,145 @@ configure_gnome_shortcuts() {
     success "Configured GNOME custom shortcuts (Super+V, Ctrl+Alt+V & Super+.)"
 }
 
+# Prints the "shell-version" entries of the extension in directory $1 (space separated).
+extension_shell_versions() {
+    local f="$1/metadata.json"
+    [ -f "$f" ] || return 0
+    tr -d '\n' < "$f" | sed -n 's/.*"shell-version"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p' | tr -d '" ' | tr ',' ' '
+}
+
+# Warns plainly for every extension whose metadata does not list the running GNOME Shell: GNOME
+# marks such an extension OUT OF DATE and never loads it, however often you log in.
+check_extension_shell_versions() {
+    command -v gnome-shell >/dev/null 2>&1 || return 0
+    local major
+    major=$(gnome-shell --version 2>/dev/null | sed -n 's/^GNOME Shell \([0-9][0-9]*\).*/\1/p')
+    [ -n "$major" ] || return 0
+
+    local ext_root="$HOME/.local/share/gnome-shell/extensions" bad=0 uuid dir versions v ok
+    for uuid in win11-clipboard-bridge@harshp2008.github.com window-calls@domandoman.xyz spawn-at@harsh.local; do
+        dir="$ext_root/$uuid"
+        [ -d "$dir" ] || dir="/usr/share/gnome-shell/extensions/$uuid"
+        if [ ! -d "$dir" ]; then
+            warn "The GNOME extension $uuid is not installed, so part of Win11Clip will not work."
+            bad=1; continue
+        fi
+        versions=$(extension_shell_versions "$dir")
+        ok=false
+        for v in $versions; do
+            if [ "$v" = "$major" ] || [ "${v%%.*}" = "$major" ]; then ok=true; fi
+        done
+        if [ "$ok" != true ]; then
+            warn "$uuid only lists GNOME Shell ${versions:-(nothing)}, but this is GNOME Shell $major."
+            warn "  GNOME will mark it OUT OF DATE and will not load it, even after logging in again. Update Win11Clip or ask the extension's author to add $major."
+            bad=1
+        fi
+    done
+    [ "$bad" -eq 0 ] && success "All three GNOME extensions list GNOME Shell $major."
+    return 0
+}
+
 setup_post_login_enable() {
     if ! command -v gnome-shell &>/dev/null; then
         return 0
     fi
     
-    log "Setting up one-time first-run autostart hook for GNOME extensions..."
+    log "Setting up the first-login check for the GNOME extensions..."
     local AUTOSTART_DIR="$HOME/.config/autostart"
     local DESKTOP_FILE="$AUTOSTART_DIR/win11clip-firstrun.desktop"
     
-    mkdir -p "$AUTOSTART_DIR"
-    
-    cat > "$DESKTOP_FILE" << 'EOF'
+    mkdir -p "$AUTOSTART_DIR" "$(dirname "$FIRSTRUN_SCRIPT")"
+
+    # The script enables the extensions, starts the app, waits for spawn-at's login update to finish
+    # (it may rewrite the extension after the Shell loaded it), and then says in plain English whether
+    # everything is really loaded. It keeps itself for up to 3 logins while something is still wrong.
+    cat > "$FIRSTRUN_SCRIPT" << 'EOF'
+#!/bin/sh
+# First-login check written by Win11Clip's install.sh. "--check-only" skips enabling, starting the
+# app and waiting, and prints notifications instead of showing them (for testing).
+STATE_DIR="$HOME/.local/state/win11clip-installer"
+LOG="$STATE_DIR/firstrun.log"
+TRIES="$STATE_DIR/firstrun.tries"
+HOOK="$HOME/.config/autostart/win11clip-firstrun.desktop"
+UUIDS="win11-clipboard-bridge@harshp2008.github.com window-calls@domandoman.xyz spawn-at@harsh.local"
+SPAWN_AT_MIN_PROTOCOL=7
+CHECK_ONLY=0; [ "$1" = "--check-only" ] && CHECK_ONLY=1
+mkdir -p "$STATE_DIR"
+
+log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+notify() { # urgency title body
+    log "[$1] $2 - $3"
+    if [ "$CHECK_ONLY" = 1 ]; then echo "NOTIFY[$1] $2 - $3"; return; fi
+    command -v notify-send >/dev/null 2>&1 && notify-send -u "$1" -a "Clipboard History" -i win11-clipboard-history "$2" "$3"
+}
+
+if [ "$CHECK_ONLY" = 0 ]; then
+    sleep 3
+    for u in $UUIDS; do gnome-extensions enable "$u" >/dev/null 2>&1; done
+    (win11-clipboard-history >/dev/null 2>&1 &)
+    # spawn-at's own login update (10 s after login) and the app's startup update may rewrite the
+    # spawn-at extension after the Shell has loaded it; judge only once they are done (at most ~70 s).
+    sleep 12
+    i=0
+    while pgrep -u "$(id -u)" -f 'spawn-at update' >/dev/null 2>&1 && [ "$i" -lt 30 ]; do sleep 2; i=$((i + 1)); done
+    sleep 2
+fi
+
+problems=""
+add() { problems="$problems
+ - $1"; }
+
+for u in $UUIDS; do
+    case "$u" in
+        win11-clipboard-bridge*) name="the Win11Clip GNOME bridge" ;;
+        window-calls*) name="window-calls" ;;
+        *) name="spawn-at" ;;
+    esac
+    state=$(gnome-extensions info "$u" 2>/dev/null | sed -n 's/^ *State: *//p')
+    case "$state" in
+        ACTIVE) ;;
+        "") add "GNOME does not know $name at all (not installed?)" ;;
+        "OUT OF DATE") add "GNOME says $name is OUT OF DATE for this GNOME Shell" ;;
+        ERROR) add "$name failed to load (ERROR)" ;;
+        *) add "$name is not running (state: $state)" ;;
+    esac
+done
+
+proto=$(gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/SpawnAt \
+    --method org.freedesktop.DBus.Properties.Get org.gnome.Shell.Extensions.SpawnAt ProtocolVersion 2>/dev/null \
+    | sed -n 's/.*uint32 \([0-9][0-9]*\).*/\1/p')
+if [ -z "$proto" ]; then
+    add "the spawn-at extension is not answering, so the popup cannot be placed at your cursor"
+elif [ "$proto" -lt "$SPAWN_AT_MIN_PROTOCOL" ]; then
+    add "an older spawn-at extension (protocol $proto, need $SPAWN_AT_MIN_PROTOCOL) is still loaded in this session"
+fi
+
+if [ -z "$problems" ]; then
+    notify normal "Clipboard History is ready" "All GNOME extensions are loaded. Press Super+V to open it."
+    [ "$CHECK_ONLY" = 0 ] && rm -f "$HOOK" "$TRIES"
+else
+    n=$(cat "$TRIES" 2>/dev/null || echo 0); n=$((n + 1))
+    [ "$CHECK_ONLY" = 0 ] && echo "$n" > "$TRIES"
+    notify critical "Clipboard History: log out and back in once more" "GNOME has not loaded everything yet:$problems
+Log out and back in once more, then press Super+V. Details: $LOG"
+    [ "$CHECK_ONLY" = 0 ] && [ "$n" -ge 3 ] && rm -f "$HOOK" "$TRIES" && log "Giving up the first-login check after $n tries."
+fi
+exit 0
+EOF
+    chmod +x "$FIRSTRUN_SCRIPT"
+
+    cat > "$DESKTOP_FILE" << EOF
 [Desktop Entry]
 Type=Application
 Name=Win11Clip First-Run Setup
-Exec=sh -c 'sleep 3 && gnome-extensions enable win11-clipboard-bridge@harshp2008.github.com && gnome-extensions enable window-calls@domandoman.xyz && gnome-extensions enable spawn-at@harsh.local && win11-clipboard-history & sleep 1; rm -f ~/.config/autostart/win11clip-firstrun.desktop'
+Exec=$FIRSTRUN_SCRIPT
 Hidden=false
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
 EOF
     
     chmod +x "$DESKTOP_FILE"
-    success "First-run autostart hook created at $DESKTOP_FILE"
+    success "First-login check created at $DESKTOP_FILE"
 }
 
 check_if_restart_required() {
@@ -1420,8 +1539,10 @@ check_if_restart_required() {
         # Try enabling via D-Bus
         gnome-extensions enable "$ext" 2>/dev/null || true
 
-        # Verify whether it is actually active in gnome-extensions list --enabled
-        if ! gnome-extensions list --enabled 2>/dev/null | grep -q "^${ext}$"; then
+        # Enabled is not enough: an extension GNOME marked OUT OF DATE is still on the enabled list.
+        # It has to be running (State: ACTIVE) in the current session.
+        if ! gnome-extensions list --enabled 2>/dev/null | grep -q "^${ext}$" \
+           || ! gnome-extensions info "$ext" 2>/dev/null | grep -Eq '^ *State: *ACTIVE'; then
             RESTART_NEEDED=1
             return
         fi
@@ -1500,6 +1621,9 @@ main() {
     
     # Configure GNOME Shell extensions if applicable
     install_gnome_extensions
+
+    # Warn if GNOME would refuse to load any of them on this Shell version
+    check_extension_shell_versions
     
     # Check if a restart is genuinely needed
     check_if_restart_required
