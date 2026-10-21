@@ -920,9 +920,11 @@ launch_app() {
     return 0
 }
 
-# Oldest spawn-at with the stale-arm fix: extension protocol 7 plus a CLI that withdraws its own
-# unclaimed arm. bundled-deps/VERSIONS must list at least this version.
-SPAWN_AT_MIN_VERSION="0.2.3"
+# Oldest spawn-at we accept: extension protocol 7 plus a CLI that withdraws its own unclaimed arm
+# (0.2.3), and, from 0.2.4, a login update that changes the extension sends a "log out and back in"
+# notification and writes a needs-logout marker, and the GNOME Shell 50 notice states what was
+# really tested. bundled-deps/VERSIONS must list at least this version.
+SPAWN_AT_MIN_VERSION="0.2.4"
 # The one copy this installer manages. spawn-at's login updater (`spawn-at update --headless`) only
 # replaces the file it runs from, and only a file you own can be replaced without sudo, so a single
 # copy in ~/.local/bin is the only layout that cannot drift apart.
