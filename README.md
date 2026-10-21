@@ -144,6 +144,16 @@ sudo setfacl -m u:$USER:rw /dev/uinput
 ./win11-clipboard-history_*.AppImage --clipboard
 ```
 
+### GNOME: `spawn-at` and the log-out after a manual install
+The packages install the app only. On GNOME the popup is placed at your cursor by [`spawn-at`](https://github.com/harshp2008/spawn-at) **0.2.4 or newer** and its GNOME Shell extension, plus the two companion extensions (`win11-clipboard-bridge`, `window-calls`); the [Quick Install](#one-line-quick-install) script sets all of them up. After a manual install, install `spawn-at` yourself and check it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/harshp2008/spawn-at/main/install.sh | bash
+spawn-at -V   # must print spawn-at 0.2.4 or newer
+```
+
+**On Wayland, a newly installed or updated GNOME extension only loads after you log out and back in.** Do that once after installing or updating `spawn-at` or any of these extensions. With the Quick Install script, a one-time check runs about 20 seconds after you log in and shows a notification, either "Clipboard History is ready" or which extension did not load (details in `~/.local/state/win11clip-installer/firstrun.log`). A manual install has no such check, so use the commands under [Troubleshooting](#-troubleshooting) to look at the extensions yourself.
+
 ---
 
 ## 🔧 Troubleshooting

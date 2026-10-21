@@ -193,6 +193,17 @@ jobs:
             > **Note:** The `setfacl` command is temporary (resets on reboot). For permanent setup, see the [README](https://github.com/harshp2008/Win11Clip#readme).
             </details>
 
+            <details>
+            <summary>GNOME: spawn-at, and logging out after a manual install</summary>
+
+            The packages above install the app only. On GNOME the popup is placed at your cursor by [spawn-at](https://github.com/harshp2008/spawn-at), **version 0.2.4 or newer**, together with its GNOME Shell extension and the two companion extensions (`win11-clipboard-bridge`, `window-calls`). The Quick Installation script sets all of them up. If you installed by hand, install spawn-at yourself and check its version:
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/harshp2008/spawn-at/main/install.sh | bash
+            spawn-at -V   # must print spawn-at 0.2.4 or newer
+            ```
+            **On Wayland, a newly installed or updated GNOME extension only loads after you log out and back in.** Do that once after installing or updating spawn-at or any of these extensions. With the Quick Installation script, a one-time check runs about 20 seconds after you log in and shows a notification: either "Clipboard History is ready", or which extension did not load (details in `~/.local/state/win11clip-installer/firstrun.log`). A manual install has no such check; see the [README](https://github.com/harshp2008/Win11Clip#-troubleshooting) to look at the extensions yourself.
+            </details>
+
             ---
 
             ### ⌨️ Usage
