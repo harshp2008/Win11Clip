@@ -867,6 +867,10 @@ print_plan() {
         echo "  Will ask    : before removing the installed apt package win11-clipboard-history $(dpkg-query -W -f='${Version}' win11-clipboard-history) (default No, backed up first)"
     fi
     echo "  Extensions  : win11-clipboard-bridge, window-calls (patched) -> ~/.local/share/gnome-shell/extensions"
+    local wc_dir="$HOME/.local/share/gnome-shell/extensions/window-calls@domandoman.xyz"
+    if [ -d "$wc_dir" ] && ! diff -rq "$wc_dir" "bundled-deps/extensions/window-calls@domandoman.xyz" >/dev/null 2>&1; then
+        echo "                your existing window-calls differs from the bundled patched one: a copy is saved in $BACKUP_DIR/window-calls first"
+    fi
     local sa_bundled sa_v sa_src_v sa_t sa_iv
     sa_bundled=$(bundled_spawn_at)
     sa_v=""
@@ -1180,7 +1184,17 @@ install_window_calls() {
 
     if [ -f "bundled-deps/extensions/$WC_UUID/extension.js" ]; then
         mkdir -p "$HOME/.local/share/gnome-shell/extensions"
-        rm -rf "$HOME/.local/share/gnome-shell/extensions/window-calls@domandoman.xyz"
+        # Keep a copy of a window-calls you already had (upstream or your own patch); uninstall.sh
+        # restores it or tells you where it is. A copy identical to the bundled one needs no backup.
+        local wc_existing="$HOME/.local/share/gnome-shell/extensions/$WC_UUID"
+        if [ -d "$wc_existing" ] && ! diff -rq "$wc_existing" "bundled-deps/extensions/$WC_UUID" >/dev/null 2>&1; then
+            local wc_backup="$BACKUP_DIR/window-calls/$(date +%Y%m%d-%H%M%S)"
+            mkdir -p "$wc_backup" && cp -a "$wc_existing/." "$wc_backup/" \
+                || error "Could not save a copy of your existing window-calls to $wc_backup, so it was not replaced."
+            record_install "replaced-window-calls:$wc_backup"
+            warn "Replacing your existing window-calls extension with the patched one (needs the GetCoordinates call). Your copy is saved in $wc_backup"
+        fi
+        rm -rf "$wc_existing"
         cp -r "bundled-deps/extensions/window-calls@domandoman.xyz" "$HOME/.local/share/gnome-shell/extensions/"
         gnome-extensions enable "window-calls@domandoman.xyz" 2>/dev/null || true
 
@@ -1586,7 +1600,7 @@ main() {
             warn "No usable prebuilt release: $RELEASE_PROBLEM."
             warn "Falling back to building from source. This installs build tools (system libraries via apt,"
             warn "Node.js via nvm and Rust via rustup in your home folder, no sudo for those) and takes several minutes."
-            if [ -r /dev/tty ]; then
+            if ( : < /dev/tty ) 2>/dev/null; then
                 local reply=""
                 read -r -p "Build from source now? [Y/n] " reply < /dev/tty || true
                 [[ "$reply" =~ ^[Nn] ]] && error "Cancelled. Re-run later, or run: $0 --dry-run to see the plan."
@@ -1670,7 +1684,7 @@ interactive_session_prompt() {
 
     # Ensure input is read from /dev/tty if stdin is piped (e.g. curl | bash)
     local tty_in=""
-    if [ -r /dev/tty ]; then
+    if ( : < /dev/tty ) 2>/dev/null; then
         exec 3</dev/tty
         tty_in=3
     elif [ ! -t 0 ]; then

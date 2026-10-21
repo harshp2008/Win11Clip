@@ -41,6 +41,10 @@ ask_yes_no() {
     [[ "$reply" =~ ^[Yy] ]]
 }
 
+# What this run removed and what it left alone, printed at the end.
+SUMMARY_REMOVED=()
+SUMMARY_KEPT=()
+
 echo ""
 echo "╔═══════════════════════════════════════════════════════════╗"
 echo "║     Win11 Clipboard History - Uninstaller                 ║"
@@ -124,15 +128,33 @@ fi
 # 2c. window-calls (patched copy installed by install.sh; other GNOME tools may rely on it)
 WC_UUID="window-calls@domandoman.xyz"
 WC_LOCAL="$HOME/.local/share/gnome-shell/extensions/$WC_UUID"
+# Copies of a window-calls that was already installed before install.sh replaced it (oldest first;
+# the oldest is the one you had originally).
+WC_BACKUPS=()
+if [ -f "$MANIFEST" ]; then
+    while IFS= read -r line; do
+        [ -d "${line#replaced-window-calls:}" ] && WC_BACKUPS+=("${line#replaced-window-calls:}")
+    done < <(grep '^replaced-window-calls:' "$MANIFEST")
+fi
 if [ -d "$WC_LOCAL" ]; then
     echo ""
     echo "window-calls is a shared GNOME extension that install.sh deployed (patched build)."
+    [ ${#WC_BACKUPS[@]} -gt 0 ] && echo "    install.sh replaced a window-calls you already had; it saved your copy in ${WC_BACKUPS[0]}"
     if ask_yes_no "Remove window-calls too? Choose No if other tools use it."; then
         command -v gnome-extensions &>/dev/null && { gnome-extensions disable "$WC_UUID" 2>/dev/null || true; }
         rm -rf "$WC_LOCAL"
-        success "window-calls removed."
+        if [ ${#WC_BACKUPS[@]} -gt 0 ]; then
+            mkdir -p "$WC_LOCAL" && cp -a "${WC_BACKUPS[0]}/." "$WC_LOCAL/" \
+                && { success "window-calls removed and your previous copy restored from ${WC_BACKUPS[0]}."; SUMMARY_REMOVED+=("window-calls (patched copy; your previous one was restored)"); } \
+                || { warn "Removed the patched window-calls but could not restore your copy; it is still in ${WC_BACKUPS[0]}."; SUMMARY_REMOVED+=("window-calls (restore failed, copy kept in ${WC_BACKUPS[0]})"); }
+        else
+            success "window-calls removed."
+            SUMMARY_REMOVED+=("window-calls")
+        fi
     else
         success "Kept window-calls."
+        SUMMARY_KEPT+=("window-calls")
+        [ ${#WC_BACKUPS[@]} -gt 0 ] && echo "    Your earlier copy stays saved in ${WC_BACKUPS[0]} (it was replaced by the patched build)."
     fi
 fi
 
@@ -170,7 +192,7 @@ if [ -n "$SPAWN_AT_BIN" ] || [ -d "$SPAWN_AT_LOCAL_EXT" ] || [ -d "$SPAWN_AT_SYS
 
         # Ensure input is read from /dev/tty if stdin is piped (e.g. curl | bash)
         local tty_in=""
-        if [ -r /dev/tty ]; then
+        if ( : < /dev/tty ) 2>/dev/null; then
             exec 3</dev/tty
             tty_in=3
         elif [ ! -t 0 ]; then
@@ -181,6 +203,10 @@ if [ -n "$SPAWN_AT_BIN" ] || [ -d "$SPAWN_AT_LOCAL_EXT" ] || [ -d "$SPAWN_AT_SYS
         # Hide cursor
         echo -ne "\033[?25l"
         trap 'echo -ne "\033[?25h"' EXIT INT TERM
+
+        # Throw away keys typed during the earlier prompts (an arrow key would otherwise move the
+        # cursor off "Keep" before the menu is even drawn).
+        while IFS= read -u "${tty_in:-0}" -rsn1 -t 0.05 _; do :; done
 
         print_menu() {
             for i in "${!options[@]}"; do
@@ -238,6 +264,10 @@ if [ -n "$SPAWN_AT_BIN" ] || [ -d "$SPAWN_AT_LOCAL_EXT" ] || [ -d "$SPAWN_AT_SYS
     prompt_spawn_at_removal || selected=$?
     echo ""
 
+    if [ "$selected" -eq 1 ] && ! ask_yes_no "Really remove spawn-at? Other shortcuts that use it will stop working."; then
+        selected=0
+    fi
+
     if [ "$selected" -eq 1 ]; then
         log "Removing spawn-at..."
         if [ -n "$SPAWN_AT_BIN" ] && [ -x "$SPAWN_AT_BIN" ]; then
@@ -255,8 +285,10 @@ if [ -n "$SPAWN_AT_BIN" ] || [ -d "$SPAWN_AT_LOCAL_EXT" ] || [ -d "$SPAWN_AT_SYS
         rm -f "$HOME/.config/autostart/spawn-at-autoupdate.desktop"
         rm -f "$HOME/.config/autostart/spawn-at-update-check.desktop"
         success "spawn-at removed."
+        SUMMARY_REMOVED+=("spawn-at (binary, extension, login entries)")
     else
         success "Kept spawn-at."
+        SUMMARY_KEPT+=("spawn-at")
     fi
 fi
 
@@ -332,20 +364,58 @@ fi
 
 # 5. Clean Binaries, Config, and Package
 log "Cleaning configuration, packages, and binaries..."
-# Package manager (APT / RPM / Pacman / AppImage)
-if command -v apt-get &>/dev/null && dpkg -l | grep -q win11-clipboard-history 2>/dev/null; then
-    $SUDO_CMD apt-get remove -y win11-clipboard-history 2>/dev/null || true
-elif command -v dnf &>/dev/null && rpm -qa | grep -q win11-clipboard-history 2>/dev/null; then
-    $SUDO_CMD dnf remove -y win11-clipboard-history 2>/dev/null || true
-elif command -v pacman &>/dev/null && pacman -Qs win11-clipboard-history &>/dev/null; then
-    $SUDO_CMD pacman -Rns --noconfirm win11-clipboard-history 2>/dev/null || true
+
+# The app can be installed as a system package (apt / dnf / pacman). Removing it deletes the app
+# itself, so it is asked first: default No, and No when there is no terminal.
+PKG_MANAGER=""; PKG_VERSION=""
+if command -v apt-get &>/dev/null && dpkg -s win11-clipboard-history >/dev/null 2>&1; then
+    PKG_MANAGER="apt"; PKG_VERSION=$(dpkg-query -W -f='${Version}' win11-clipboard-history 2>/dev/null)
+elif command -v dnf &>/dev/null && rpm -q win11-clipboard-history >/dev/null 2>&1; then
+    PKG_MANAGER="dnf"; PKG_VERSION=$(rpm -q --qf '%{VERSION}' win11-clipboard-history 2>/dev/null)
+elif command -v pacman &>/dev/null && pacman -Qi win11-clipboard-history &>/dev/null; then
+    PKG_MANAGER="pacman"; PKG_VERSION=$(pacman -Q win11-clipboard-history 2>/dev/null | awk '{print $2}')
 fi
+PACKAGE_KEPT=false
+if [ -n "$PKG_MANAGER" ]; then
+    echo ""
+    echo "The Win11Clip app is installed as a system package: win11-clipboard-history $PKG_VERSION ($PKG_MANAGER)."
+    echo "    Removing it deletes the app from /usr. Your clipboard history (~/.local/share) is not touched."
+    if ask_yes_no "Remove the package win11-clipboard-history?"; then
+        case "$PKG_MANAGER" in
+            apt)    PKG_REMOVE=(apt-get remove -y win11-clipboard-history) ;;
+            dnf)    PKG_REMOVE=(dnf remove -y win11-clipboard-history) ;;
+            pacman) PKG_REMOVE=(pacman -Rns --noconfirm win11-clipboard-history) ;;
+        esac
+        if $SUDO_CMD "${PKG_REMOVE[@]}"; then
+            success "Removed the package win11-clipboard-history $PKG_VERSION."
+            SUMMARY_REMOVED+=("package win11-clipboard-history $PKG_VERSION")
+        else
+            warn "Could not remove the package. Run it yourself: sudo ${PKG_REMOVE[*]}"
+            PACKAGE_KEPT=true
+            SUMMARY_KEPT+=("package win11-clipboard-history $PKG_VERSION (removal failed)")
+        fi
+    else
+        PACKAGE_KEPT=true
+        success "Kept the package. Remove it later with: sudo ${PKG_MANAGER/apt/apt-get} remove win11-clipboard-history"
+        SUMMARY_KEPT+=("package win11-clipboard-history $PKG_VERSION (app files in /usr)")
+    fi
+fi
+
+# True for a file that belongs to the package we just decided to keep: those are left alone.
+owned_by_kept_package() {
+    [ "$PACKAGE_KEPT" = true ] || return 1
+    case "$PKG_MANAGER" in
+        apt) dpkg -S "$1" 2>/dev/null | grep -q '^win11-clipboard-history' ;;
+        *) case "$1" in /usr/local/*) return 1 ;; *) return 0 ;; esac ;;
+    esac
+}
 
 # AppImage and user-local files
 rm -f "$HOME/.local/bin/win11-clipboard-history.AppImage"
 rm -f "$HOME/.local/bin/win11-clipboard-history"
 rm -f "$HOME/.local/share/applications/win11-clipboard-history.desktop"
 rm -f "$HOME/.config/autostart/win11clip-firstrun.desktop"
+rm -f "$HOME/.local/state/win11clip-installer/firstrun.sh" "$HOME/.local/state/win11clip-installer/firstrun.log" "$HOME/.local/state/win11clip-installer/firstrun.tries"
 rm -f "$HOME/.config/autostart/win11-clipboard-history.desktop"
 rm -rf "$HOME/.config/win11-clipboard-history"
 
@@ -363,6 +433,7 @@ for target in \
     "/etc/udev/rules.d/99-win11-clipboard-input.rules" \
     "/etc/modules-load.d/win11-clipboard.conf"; do
     if [ -e "$target" ] || [ -L "$target" ]; then
+        if owned_by_kept_package "$target"; then continue; fi
         $SUDO_CMD rm -f "$target"
         if [ -e "$target" ] || [ -L "$target" ]; then
             error "Failed to remove system file: $target"
@@ -379,8 +450,22 @@ if [ -d "$BACKUP_DIR" ]; then
     echo "    (delete them when you no longer need them: rm -rf ~/.local/state/win11clip-installer)"
 fi
 
+# What was removed and what was left alone
+echo ""
+if [ ${#SUMMARY_REMOVED[@]} -gt 0 ]; then
+    echo "Removed:"; printf '  - %s\n' "${SUMMARY_REMOVED[@]}"
+fi
+if [ ${#SUMMARY_KEPT[@]} -gt 0 ]; then
+    echo "Kept (you chose to, or it could not be removed):"; printf '  - %s\n' "${SUMMARY_KEPT[@]}"
+fi
+
 # Display completion message
 echo -e "\n${BLUE}┌──────────────────────────────────────────────────────────────┐${NC}"
+if [ "$PACKAGE_KEPT" = true ]; then
+echo -e "${BLUE}│${NC}  ${YELLOW}! Partly uninstalled.${NC}                                       ${BLUE}│${NC}"
+echo -e "${BLUE}│${NC}  The app package may still be installed (kept or failed).    ${BLUE}│${NC}"
+else
 echo -e "${BLUE}│${NC}  ${GREEN}✓ Uninstallation Complete!${NC}                                  ${BLUE}│${NC}"
 echo -e "${BLUE}│${NC}  Win11 Clipboard History has been removed.                   ${BLUE}│${NC}"
+fi
 echo -e "${BLUE}└──────────────────────────────────────────────────────────────┘${NC}\n"
