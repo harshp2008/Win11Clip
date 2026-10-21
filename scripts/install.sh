@@ -1186,8 +1186,11 @@ install_window_calls() {
         mkdir -p "$HOME/.local/share/gnome-shell/extensions"
         # Keep a copy of a window-calls you already had (upstream or your own patch); uninstall.sh
         # restores it or tells you where it is. A copy identical to the bundled one needs no backup.
-        local wc_existing="$HOME/.local/share/gnome-shell/extensions/$WC_UUID"
-        if [ -d "$wc_existing" ] && ! diff -rq "$wc_existing" "bundled-deps/extensions/$WC_UUID" >/dev/null 2>&1; then
+        local wc_existing="$HOME/.local/share/gnome-shell/extensions/$WC_UUID" wc_changed=true
+        if [ -d "$wc_existing" ] && diff -rq "$wc_existing" "bundled-deps/extensions/$WC_UUID" >/dev/null 2>&1; then
+            wc_changed=false
+        fi
+        if [ -d "$wc_existing" ] && [ "$wc_changed" = true ]; then
             local wc_backup="$BACKUP_DIR/window-calls/$(date +%Y%m%d-%H%M%S)"
             mkdir -p "$wc_backup" && cp -a "$wc_existing/." "$wc_backup/" \
                 || error "Could not save a copy of your existing window-calls to $wc_backup, so it was not replaced."
@@ -1198,8 +1201,11 @@ install_window_calls() {
         cp -r "bundled-deps/extensions/window-calls@domandoman.xyz" "$HOME/.local/share/gnome-shell/extensions/"
         gnome-extensions enable "window-calls@domandoman.xyz" 2>/dev/null || true
 
-        EXTENSIONS_MODIFIED=1
-        RESTART_NEEDED=1
+        # The Shell only reads extension files at login: ask for a log-out only if they changed.
+        if [ "$wc_changed" = true ]; then
+            EXTENSIONS_MODIFIED=1
+            RESTART_NEEDED=1
+        fi
         success "Deployed and enabled patched $WC_UUID"
     else
         error "Failed to locate or download patched $WC_UUID extension."
