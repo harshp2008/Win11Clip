@@ -51,11 +51,40 @@ echo "║     Win11 Clipboard History - Uninstaller                 ║"
 echo "╚═══════════════════════════════════════════════════════════╝"
 echo ""
 
+# Process ids of the running app: a process whose executable (or, for the wrapper script, whose script)
+# is named exactly win11-clipboard-history, win11-clipboard-history-bin or win11-clipboard-history.AppImage.
+# `pkill -f` is not used: it matches any command line that merely contains the text (an editor open on
+# a file with that name, a shell, this script's caller). `pkill -x` with the full name is not possible
+# either: the kernel keeps only 15 characters of a process name, so procps refuses longer names and
+# matches nothing. So take the processes named "win11-clipboard" (the first 15 characters) and keep
+# those whose executable name is exactly ours.
+app_pids() {
+    local pid exe name
+    for pid in $(pgrep -x win11-clipboard 2>/dev/null || true); do
+        exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || continue
+        exe="${exe% (deleted)}"
+        name="${exe##*/}"
+        case "$name" in
+            bash|sh|dash)   # the wrapper script: the script's name is the first argument that is not an option
+                name=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | awk 'NR>1 && $0 !~ /^-/ {print; exit}')
+                name="${name##*/}" ;;
+        esac
+        case "$name" in
+            win11-clipboard-history|win11-clipboard-history-bin|win11-clipboard-history.AppImage) echo "$pid" ;;
+        esac
+    done
+}
+
 # 1. Terminate running instances
 log "Terminating running instances..."
-pkill -f win11-clipboard-history 2>/dev/null || true
-pkill -f win11-clipboard-history.AppImage 2>/dev/null || true
-success "Processes terminated."
+APP_PIDS=$(app_pids)
+if [ -n "$APP_PIDS" ]; then
+    # shellcheck disable=SC2086  # one pid per word
+    kill $APP_PIDS 2>/dev/null || true
+    success "Stopped the running app (pid $(echo $APP_PIDS))."
+else
+    success "The app is not running."
+fi
 
 # 2. Clean Custom Extension
 log "Removing win11-clipboard-bridge extension..."
