@@ -423,7 +423,7 @@ impl WindowController {
                     }
                 }
 
-                Self::position_and_show(&window, app);
+                Self::position_and_show(&window, app, true);
             }
         }
     }
@@ -468,7 +468,9 @@ impl WindowController {
                     }
                 }
 
-                Self::position_and_show(&window, app);
+                // Forwarded shortcut: `spawn-at` already placed and clamped the new window, so
+                // do not snap it again (the snap has no screen-edge clamp).
+                Self::position_and_show(&window, app, false);
         }
     }
 
@@ -484,7 +486,7 @@ impl WindowController {
         }
     }
 
-    fn position_and_show(window: &WebviewWindow, app: &AppHandle) {
+    fn position_and_show(window: &WebviewWindow, app: &AppHandle, snap_to_cursor: bool) {
         let state = app.state::<AppState>();
 
         if is_wayland() {
@@ -547,7 +549,9 @@ impl WindowController {
                         }
                         // Steal focus explicitly via window-calls
                         let _ = win11_clipboard_history_lib::focus_manager::wayland_activate_window_id(cb_id);
-                        win11_clipboard_history_lib::focus_manager::wayland_snap_to_cursor(cb_id);
+                        if snap_to_cursor {
+                            win11_clipboard_history_lib::focus_manager::wayland_snap_to_cursor(cb_id);
+                        }
                         break;
                     }
                 }
