@@ -89,9 +89,13 @@ async function applyUIScale(scale: number) {
 
 /**
  * Main Clipboard App Component
+ *
+ * `initialTab` is what this launch asked to open (Super+. and friends on a cold
+ * start). It seeds the state so the first frame is already the requested tab,
+ * instead of rendering the clipboard tab and switching afterwards.
  */
-function ClipboardApp() {
-  const [activeTab, setActiveTab] = useState<ActiveTab>('clipboard')
+function ClipboardApp({ initialTab }: { initialTab?: ActiveTab | null }) {
+  const [activeTab, setActiveTab] = useState<ActiveTab>(initialTab ?? 'clipboard')
   const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
 
@@ -155,6 +159,18 @@ function ClipboardApp() {
       unlistenSwitchTab.then((unlisten) => unlisten())
     }
   }, [])
+
+  // Tell Rust that the requested tab is on screen. A single-instance tab switch
+  // defers showing the window until this arrives, so the window is presented with
+  // the new tab painted instead of flashing the previously selected one first.
+  // This runs after React has committed and painted; the backend ignores it when
+  // no show is pending, and falls back to a timeout if it never arrives.
+  useEffect(() => {
+    if (!settingsLoaded) return
+    invoke('notify_tab_applied').catch((err) => {
+      console.error('Failed to confirm tab applied:', err)
+    })
+  }, [activeTab, settingsLoaded])
 
   // Re-apply CSS opacity variables whenever renderingEnv or settings change
   useEffect(() => {
