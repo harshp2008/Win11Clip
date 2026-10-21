@@ -21,15 +21,22 @@ StartupNotify=false
 X-GNOME-Autostart-enabled=true
 "#;
 
-const SPAWN_AT_AUTOUPDATE_TEMPLATE: &str = r#"[Desktop Entry]
+/// The login auto-update entry. `spawn_at` is the command from `spawn_at_path::desktop_exec_in`
+/// (the full path of `~/.local/bin/spawn-at` when present); the old fallbacks stay for machines
+/// where that copy is missing.
+fn spawn_at_autoupdate_entry(spawn_at: &str) -> String {
+    format!(
+        r#"[Desktop Entry]
 Type=Application
 Name=spawn-at Auto Update
-Exec=sh -c 'sleep 10 && (spawn-at update --headless || ~/.local/bin/spawn-at update --headless || /usr/local/bin/spawn-at update --headless)'
+Exec=sh -c 'sleep 10 && ({spawn_at} update --headless || ~/.local/bin/spawn-at update --headless || /usr/local/bin/spawn-at update --headless)'
 Hidden=false
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
 Comment=Automatically check and install spawn-at updates on login
-"#;
+"#
+    )
+}
 
 /// Get the path to the autostart directory
 fn get_autostart_dir() -> Option<PathBuf> {
@@ -228,13 +235,14 @@ pub fn ensure_spawn_at_autoupdate() -> Result<(), String> {
 
     // Write dedicated spawn-at-autoupdate.desktop
     let autoupdate_file = autostart_dir.join("spawn-at-autoupdate.desktop");
+    let entry = spawn_at_autoupdate_entry(&crate::spawn_at_path::desktop_exec());
     let needs_write = match fs::read_to_string(&autoupdate_file) {
-        Ok(c) => c.trim() != SPAWN_AT_AUTOUPDATE_TEMPLATE.trim(),
+        Ok(c) => c.trim() != entry.trim(),
         Err(_) => true,
     };
 
     if needs_write {
-        fs::write(&autoupdate_file, SPAWN_AT_AUTOUPDATE_TEMPLATE)
+        fs::write(&autoupdate_file, &entry)
             .map_err(|e| format!("Failed to write spawn-at autoupdate file: {}", e))?;
         println!(
             "[Autostart] Configured spawn-at auto-update on login at {}",
@@ -243,4 +251,24 @@ pub fn ensure_spawn_at_autoupdate() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod spawn_at_entry_tests {
+    use super::spawn_at_autoupdate_entry;
+
+    #[test]
+    fn bare_name_keeps_the_previous_entry_text() {
+        let e = spawn_at_autoupdate_entry("spawn-at");
+        assert!(e.contains("Exec=sh -c 'sleep 10 && (spawn-at update --headless || ~/.local/bin/spawn-at update --headless || /usr/local/bin/spawn-at update --headless)'\n"));
+        assert!(e.starts_with("[Desktop Entry]\nType=Application\n"));
+    }
+
+    #[test]
+    fn full_path_goes_first() {
+        let e = spawn_at_autoupdate_entry("/home/u/.local/bin/spawn-at");
+        assert!(e.contains(
+            "&& (/home/u/.local/bin/spawn-at update --headless || ~/.local/bin/spawn-at"
+        ));
+    }
 }

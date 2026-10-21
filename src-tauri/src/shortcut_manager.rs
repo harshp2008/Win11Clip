@@ -88,6 +88,17 @@ fn get_command_path() -> &'static str {
     "win11-clipboard-history"
 }
 
+/// The command string a shortcut runs: `template` (which starts with the bare `spawn-at`) with the
+/// app executable substituted and the spawn-at command decided by `spawn_at_path` (full path of
+/// `~/.local/bin/spawn-at` when present, as scripts/install.sh does).
+fn build_shortcut_command(template: &str, app_path: &str, spawn_at: &str) -> String {
+    let replaced = template.replace("win11-clipboard-history", app_path);
+    match replaced.strip_prefix(crate::spawn_at_path::SPAWN_AT_NAME) {
+        Some(rest) if rest.starts_with(' ') => format!("{spawn_at}{rest}"),
+        _ => replaced,
+    }
+}
+
 const SHORTCUTS: &[ShortcutConfig] = &[
     ShortcutConfig {
         id: "win11-clipboard-history",
@@ -182,13 +193,14 @@ pub fn register_global_shortcut() {
     println!("[ShortcutManager] Detected Environment: {}", handler.name());
 
     let command_path = get_command_path();
-    println!("[ShortcutManager] Using command path: {}", command_path);
+    let spawn_at = crate::spawn_at_path::shell_command();
+    println!("[ShortcutManager] Using command path: {} (spawn-at: {})", command_path, spawn_at);
 
     for shortcut in SHORTCUTS {
         // Create a new config with the correct command path
         let mut config = shortcut.clone();
         // Overwrite the base executable name but keep the spawn-at wrapper
-        let replaced_cmd = config.command.replace("win11-clipboard-history", command_path);
+        let replaced_cmd = build_shortcut_command(config.command, command_path, &spawn_at);
         config.command = Box::leak(replaced_cmd.into_boxed_str());
 
         match handler.register(&config) {
@@ -209,11 +221,12 @@ pub fn unregister_global_shortcut() {
     println!("[ShortcutManager] Environment: {}", handler.name());
 
     let command_path = get_command_path();
+    let spawn_at = crate::spawn_at_path::shell_command();
 
     for shortcut in SHORTCUTS {
         // Create a new config with the correct command path
         let mut config = shortcut.clone();
-        let replaced_cmd = config.command.replace("win11-clipboard-history", command_path);
+        let replaced_cmd = build_shortcut_command(config.command, command_path, &spawn_at);
         config.command = Box::leak(replaced_cmd.into_boxed_str());
 
         match handler.unregister(&config) {
@@ -2593,6 +2606,25 @@ pub fn check_shortcut_tools() -> ShortcutToolsStatus {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shortcut_command_uses_given_spawn_at_and_app_path() {
+        let t = "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history";
+        assert_eq!(
+            super::build_shortcut_command(t, "win11-clipboard-history", "spawn-at"),
+            t
+        );
+        assert_eq!(
+            super::build_shortcut_command(t, "/usr/bin/app", "/home/u/.local/bin/spawn-at"),
+            "/home/u/.local/bin/spawn-at spawn --anchor cursor -o -15 -15 -m 10 /usr/bin/app"
+        );
+        assert_eq!(
+            super::build_shortcut_command(t, "win11-clipboard-history", "\"/h/a b/spawn-at\""),
+            "\"/h/a b/spawn-at\" spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history"
+        );
+        // a template that does not start with spawn-at is left alone
+        assert_eq!(super::build_shortcut_command("other x", "a", "/p/spawn-at"), "other x");
+    }
+
     use super::*;
 
     #[test]

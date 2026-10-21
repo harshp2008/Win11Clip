@@ -1031,6 +1031,17 @@ spawn_at_shortcut_exe() {
     echo "$exe"
 }
 
+# The spawn-at word for a desktop-entry Exec= line: the full path of the user copy, or the bare name
+# when it is not installed or the path has characters that are awkward to quote there. Mirrors
+# spawn_at_path::desktop_exec in src-tauri.
+spawn_at_desktop_exec() {
+    if [ -x "$SPAWN_AT_USER_BIN" ] && [[ "$SPAWN_AT_USER_BIN" =~ ^[A-Za-z0-9/._+,:@=-]+$ ]]; then
+        echo "$SPAWN_AT_USER_BIN"
+    else
+        echo "spawn-at"
+    fi
+}
+
 # Fingerprint of the deployed spawn-at extension files, to tell whether `spawn-at install` changed them.
 spawn_at_ext_fingerprint() {
     [ -d "$SPAWN_AT_EXT_DIR" ] || { echo "absent"; return; }
@@ -1142,11 +1153,14 @@ install_spawn_at() {
     # Configure auto-update on login
     local autostart_dir="$HOME/.config/autostart"
     mkdir -p "$autostart_dir"
-    cat > "$autostart_dir/spawn-at-autoupdate.desktop" << 'EOF'
+    local sa_exec
+    sa_exec=$(spawn_at_desktop_exec)
+    # Same text as the app writes (src-tauri/src/autostart_manager.rs), which rewrites the file when it differs.
+    cat > "$autostart_dir/spawn-at-autoupdate.desktop" << EOF
 [Desktop Entry]
 Type=Application
 Name=spawn-at Auto Update
-Exec=sh -c 'sleep 10 && (spawn-at update --headless || ~/.local/bin/spawn-at update --headless || /usr/local/bin/spawn-at update --headless)'
+Exec=sh -c 'sleep 10 && ($sa_exec update --headless || ~/.local/bin/spawn-at update --headless || /usr/local/bin/spawn-at update --headless)'
 Hidden=false
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
