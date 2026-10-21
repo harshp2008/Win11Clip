@@ -4,11 +4,11 @@
 # ./spawn-at from the tarball here, run `bundled-deps/bin/spawn-at -V` (must print the version, not
 # DEV BUILD), then update the line below.
 #
-# spawn-at: https://github.com/harshp2008/spawn-at/releases/tag/v0.2.3
-#   asset spawn-at-x86_64-unknown-linux-gnu.tar.gz, sha256 60183392c273ea05216b6754f9720705107f595d0059fd6a3b5792f6315ef630
+# spawn-at: https://github.com/harshp2008/spawn-at/releases/tag/v0.2.4
+#   asset spawn-at-x86_64-unknown-linux-gnu.tar.gz, sha256 4ccd216209a99a4b250291d8d0e5b5f1a5fd41132def8f0dccb80821a6f2db8e
 #   (matches the digest GitHub shows for the asset); the sha256 below is of the ./spawn-at inside it.
 #   x86_64 only: on other CPUs install.sh falls back to the official installer.
-spawn-at 0.2.3 2e045e865c7bd96c1603612c56b2b5eb24e917c0226a10144dabcc006844e9be bin/spawn-at
+spawn-at 0.2.4 13f9c25da0baef71548f07898e162c0b20720d3a6eb4c2bfc85f71af1d5c384a bin/spawn-at
 #
 # window-calls: https://github.com/ickyicky/window-calls with a GetCoordinates D-Bus method added
 # (the "version" in metadata.json is upstream's extension version number).

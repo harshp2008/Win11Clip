@@ -271,6 +271,30 @@ ensure_rust() {
 }
 
 # Cleanup previous AppImage installation (prevents conflicts with package manager installs)
+# Prints the pids of running processes whose executable is exactly one of the names given. `pkill -x`
+# cannot do this for our names: the kernel keeps 15 characters of a process name and procps refuses
+# longer patterns, so it matches nothing. So take the processes named "win11-clipboard" (the first
+# 15 characters) and compare the executable's real name.
+app_pids() {
+    local pid exe name want
+    for pid in $(pgrep -x win11-clipboard 2>/dev/null || true); do
+        exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || continue
+        exe="${exe% (deleted)}"; name="${exe##*/}"
+        for want in "$@"; do
+            [ "$name" = "$want" ] && echo "$pid"
+        done
+    done
+    return 0
+}
+
+# Stops (SIGTERM) the processes app_pids finds for the names given.
+stop_app_by_name() {
+    local pids
+    pids=$(app_pids "$@")
+    # shellcheck disable=SC2086  # one pid per word
+    [ -z "$pids" ] || kill $pids 2>/dev/null || true
+}
+
 cleanup_appimage_installation() {
     local has_appimage=false
     
@@ -285,7 +309,7 @@ cleanup_appimage_installation() {
         log "Detected previous AppImage installation. Cleaning up..."
         
         # Kill any running AppImage instances
-        killall -q win11-clipboard-history.AppImage 2>/dev/null || pkill -x win11-clipboard-history.AppImage 2>/dev/null || true
+        killall -q win11-clipboard-history.AppImage 2>/dev/null || stop_app_by_name win11-clipboard-history.AppImage
 
         # Wait for processes to terminate, with a timeout
         timeout=5
@@ -400,8 +424,7 @@ install_via_package_manager() {
     # 4. Check for Arch Family (Arch, Manjaro, CachyOS, Endeavour, etc)
     # Check this AFTER other distros to avoid false positives from pacman being installed
     elif [[ "$SYSTEM_FAMILY_INFO" =~ "arch" ]]; then
-        install_aur
-        return 0
+        arch_not_supported
     fi
     
     # Fallback: Check for package managers if distro detection failed
@@ -416,8 +439,7 @@ install_via_package_manager() {
         install_rpm_suse
         return 0
     elif command -v pacman &>/dev/null; then
-        install_aur
-        return 0
+        arch_not_supported
     fi
 
     return 1  # Unknown system family
@@ -531,23 +553,20 @@ install_rpm_suse() {
     success "Installed via Zypper (from GitHub release)"
 }
 
-install_aur() {
-    log "Installing from AUR..."
-    
-    # Detect AUR helper
-    if command -v yay &>/dev/null; then
-        yay -S --noconfirm win11-clipboard-history-bin
-    elif command -v paru &>/dev/null; then
-        paru -S --noconfirm win11-clipboard-history-bin
-    else
-        warn "No AUR helper found. Installing yay first..."
-        sudo pacman -S --needed --noconfirm git base-devel
-        git clone https://aur.archlinux.org/yay-bin.git /tmp/yay-bin
-        cd /tmp/yay-bin && makepkg -si --noconfirm
-        yay -S --noconfirm win11-clipboard-history-bin
-    fi
-    
-    success "Installed via AUR!"
+# Arch is not supported yet. The AUR package win11-clipboard-history-bin is upstream's
+# (gustavosett's build, without this project's fixes), not this project's, so it is never installed
+# from here; this project publishes no AUR package of its own.
+arch_not_supported() {
+    echo ""
+    warn "Arch Linux (pacman) is not supported by this installer yet, so nothing was installed."
+    echo "    The AUR package win11-clipboard-history-bin is maintained by the upstream project"
+    echo "    (gustavosett), not by Win11Clip, and it lacks this project's fixes. It is not installed."
+    echo "    What you can do today:"
+    echo "      - Use the AppImage from https://github.com/$REPO_OWNER/$REPO_NAME/releases"
+    echo "        (some features are disabled in it; see the README), or"
+    echo "      - Build from source by hand (README, Development)."
+    echo ""
+    error "Arch Linux is not supported yet."
 }
 
 install_appimage() {
@@ -825,7 +844,7 @@ build_from_source() {
     # The wrapper looks in /usr/bin before /usr/local/lib, so a packaged copy (for example
     # upstream's) would keep running instead of the build that was just made.
     remove_packaged_copy
-    sudo env "PATH=$PATH" make install PREFIX=/usr/local || error "make install failed. Read the error above."
+    sudo env "PATH=$PATH" make install PREFIX=/usr/local INSTALL_SPAWN_AT=no || error "make install failed. Read the error above."
 
     success "Build and install from source completed successfully."
 }
@@ -841,7 +860,7 @@ print_plan() {
     if [ "$BUILD_FROM_SOURCE" = true ]; then
         mode="build from source (--build)"
     elif [[ "$SYSTEM_FAMILY_INFO" =~ arch ]]; then
-        mode="AUR package"
+        mode="not supported yet on Arch: the installer stops without installing anything (the AUR package of that name is upstream's)"
     elif release_is_usable "$ext"; then
         echo "  Release     : $RELEASE_TAG -> $(release_asset_url "$ext")"
     else
@@ -876,21 +895,20 @@ print_plan() {
     sa_v=""
     if [ -n "$sa_bundled" ]; then sa_v=$(spawn_at_version "$sa_bundled"); fi
     sa_src_v="$sa_v"
-    for sa_t in "$SPAWN_AT_SYSTEM_BIN" "$SPAWN_AT_USER_BIN"; do
+    for sa_t in "$SPAWN_AT_USER_BIN" "$SPAWN_AT_SYSTEM_BIN"; do
         sa_iv=$(spawn_at_version "$sa_t")
         if [ -n "$sa_iv" ] && { [ -z "$sa_src_v" ] || semver_lt "$sa_src_v" "$sa_iv"; }; then sa_src_v="$sa_iv"; fi
     done
     if [ -n "$sa_v" ]; then
-        echo "  spawn-at    : bundled $sa_v (needs $SPAWN_AT_MIN_VERSION or newer); a newer installed copy is kept, older ones are replaced"
+        echo "  spawn-at    : bundled $sa_v (needs $SPAWN_AT_MIN_VERSION or newer); one managed copy in ~/.local/bin, a newer installed copy is kept"
     else
         echo "  spawn-at    : no bundled copy here; $SPAWN_AT_MIN_VERSION or newer is downloaded from github.com/harshp2008/spawn-at unless one is already installed"
         sa_src_v="${sa_src_v:-$SPAWN_AT_MIN_VERSION}"
     fi
-    for sa_t in "$SPAWN_AT_SYSTEM_BIN" "$SPAWN_AT_USER_BIN"; do
-        echo "                $(spawn_at_copy_plan "$sa_t" "$sa_src_v")"
-    done
+    echo "                $(spawn_at_copy_plan "$SPAWN_AT_USER_BIN" "$sa_src_v")"
+    echo "                $(spawn_at_system_copy_plan "$sa_src_v")"
     echo "                its GNOME extension is deployed by that same CLI, so the two never differ"
-    echo "  Shortcuts   : Super+V, Ctrl+Alt+V, Super+. via GNOME custom keybindings"
+    echo "  Shortcuts   : Super+V, Ctrl+Alt+V, Super+. via GNOME custom keybindings, running $(spawn_at_shortcut_exe planned) by its full path"
     if [[ "${XDG_SESSION_TYPE:-}" == "wayland" ]]; then
         echo "  Note        : on Wayland, newly installed or updated GNOME extensions only load after you log out and back in."
         echo "  After login : a one-time check (autostart) reports in plain English if an extension did not load; log: ~/.local/state/win11clip-installer/firstrun.log"
@@ -903,8 +921,8 @@ launch_app() {
     log "Starting application..."
     
     # Kill any existing instances (matches both wrapper and -bin binary)
-    killall -q win11-clipboard-history-bin 2>/dev/null || pkill -x win11-clipboard-history-bin 2>/dev/null || true
-    killall -q win11-clipboard-history.AppImage 2>/dev/null || pkill -x win11-clipboard-history.AppImage 2>/dev/null || true
+    killall -q win11-clipboard-history-bin 2>/dev/null || stop_app_by_name win11-clipboard-history-bin
+    killall -q win11-clipboard-history.AppImage 2>/dev/null || stop_app_by_name win11-clipboard-history.AppImage
     sleep 1
     
     # Launch detached from terminal
@@ -921,11 +939,18 @@ launch_app() {
     return 0
 }
 
-# Oldest spawn-at with the stale-arm fix: extension protocol 7 plus a CLI that withdraws its own
-# unclaimed arm. bundled-deps/VERSIONS must list at least this version.
-SPAWN_AT_MIN_VERSION="0.2.3"
-SPAWN_AT_SYSTEM_BIN="/usr/local/bin/spawn-at"
+# Oldest spawn-at we accept: extension protocol 7 plus a CLI that withdraws its own unclaimed arm
+# (0.2.3), and, from 0.2.4, a login update that changes the extension sends a "log out and back in"
+# notification and writes a needs-logout marker, and the GNOME Shell 50 notice states what was
+# really tested. bundled-deps/VERSIONS must list at least this version.
+SPAWN_AT_MIN_VERSION="0.2.4"
+# The one copy this installer manages. spawn-at's login updater (`spawn-at update --headless`) only
+# replaces the file it runs from, and only a file you own can be replaced without sudo, so a single
+# copy in ~/.local/bin is the only layout that cannot drift apart.
 SPAWN_AT_USER_BIN="$HOME/.local/bin/spawn-at"
+# Older installers (and `make install`) also put a copy here. It is never created any more; one that
+# is already there is brought up to date (or reported when that needs a sudo that is not available).
+SPAWN_AT_SYSTEM_BIN="/usr/local/bin/spawn-at"
 SPAWN_AT_EXT_DIR="$HOME/.local/share/gnome-shell/extensions/spawn-at@harsh.local"
 
 # Prints the release version an executable reports ("spawn-at 0.2.3" -> 0.2.3), or nothing when it
@@ -982,6 +1007,41 @@ spawn_at_copy_plan() {
     else echo "$path: $have -> keep (not older than $want)"; fi
 }
 
+# One line saying what will happen to the old system-wide copy, given the version we will install.
+spawn_at_system_copy_plan() {
+    local want="$1" have
+    local path="$SPAWN_AT_SYSTEM_BIN"
+    if [ ! -e "$path" ]; then echo "$path: not installed -> not created (the shortcuts use ~/.local/bin/spawn-at)"; return; fi
+    have=$(spawn_at_version "$path")
+    if [ -z "$have" ]; then echo "$path: no release version (dev build?) -> left as it is, reported"
+    elif semver_lt "$have" "$want"; then echo "$path: $have, from an earlier installer -> replaced with $want (sudo), or reported if sudo is not available"
+    else echo "$path: $have -> keep (not older than $want)"; fi
+}
+
+# The spawn-at the GNOME shortcuts run: the full path of the managed copy, so they work whatever PATH
+# the Shell was started with (~/.local/bin is only on it when that folder existed at login). Quoted
+# when the path contains a space. Falls back to the system copy, then to the bare name; with an
+# argument ("planned", for --dry-run) the user copy is named even though it is not installed yet.
+spawn_at_shortcut_exe() {
+    local exe=""
+    if [ -x "$SPAWN_AT_USER_BIN" ] || [ -n "${1:-}" ]; then exe="$SPAWN_AT_USER_BIN"
+    elif [ -x "$SPAWN_AT_SYSTEM_BIN" ]; then exe="$SPAWN_AT_SYSTEM_BIN"
+    else exe="spawn-at"; fi
+    case "$exe" in *[[:space:]]*) exe="\"$exe\"" ;; esac
+    echo "$exe"
+}
+
+# The spawn-at word for a desktop-entry Exec= line: the full path of the user copy, or the bare name
+# when it is not installed or the path has characters that are awkward to quote there. Mirrors
+# spawn_at_path::desktop_exec in src-tauri.
+spawn_at_desktop_exec() {
+    if [ -x "$SPAWN_AT_USER_BIN" ] && [[ "$SPAWN_AT_USER_BIN" =~ ^[A-Za-z0-9/._+,:@=-]+$ ]]; then
+        echo "$SPAWN_AT_USER_BIN"
+    else
+        echo "spawn-at"
+    fi
+}
+
 # Fingerprint of the deployed spawn-at extension files, to tell whether `spawn-at install` changed them.
 spawn_at_ext_fingerprint() {
     [ -d "$SPAWN_AT_EXT_DIR" ] || { echo "absent"; return; }
@@ -991,7 +1051,8 @@ spawn_at_ext_fingerprint() {
 install_spawn_at() {
     log "Installing spawn-at utility (minimum version $SPAWN_AT_MIN_VERSION)..."
     local bundled bundled_v="" src="" src_v="" t v
-    local targets=("$SPAWN_AT_SYSTEM_BIN" "$SPAWN_AT_USER_BIN")
+    # User copy first: when two copies report the same version, the extension is deployed from it.
+    local targets=("$SPAWN_AT_USER_BIN" "$SPAWN_AT_SYSTEM_BIN")
 
     bundled=$(bundled_spawn_at)
     if [ -n "$bundled" ]; then
@@ -1031,25 +1092,42 @@ install_spawn_at() {
     work="$(mktemp -d)"; CLEANUP_PATHS+=("$work")
     if [ -n "$src" ]; then
         cp -f "$src" "$work/spawn-at"; chmod 755 "$work/spawn-at"
-        for t in "${targets[@]}"; do
-            v=$(spawn_at_version "$t")
-            if [ -e "$t" ] && [ -n "$v" ] && ! semver_lt "$v" "$src_v"; then
-                log "Keeping $t ($v, not older than $src_v)"
-                continue
-            fi
+
+        # The managed copy, in ~/.local/bin (a newer one is never replaced).
+        t="$SPAWN_AT_USER_BIN"
+        v=$(spawn_at_version "$t")
+        if [ -e "$t" ] && [ -n "$v" ] && ! semver_lt "$v" "$src_v"; then
+            log "Keeping $t ($v, not older than $src_v)"
+        else
             if [ -e "$t" ] && [ -z "$v" ]; then
                 mkdir -p "$BACKUP_DIR"
-                cp -f "$t" "$BACKUP_DIR/spawn-at$(echo "$t" | tr / _).$(date +%Y%m%d-%H%M%S)" 2>/dev/null \
-                    && log "$t has no release version (a dev build?); saved a copy in $BACKUP_DIR"
+                if cp -f "$t" "$BACKUP_DIR/spawn-at$(echo "$t" | tr / _).$(date +%Y%m%d-%H%M%S)" 2>/dev/null; then
+                    log "$t has no release version (a dev build?); saved a copy in $BACKUP_DIR"
+                fi
             fi
-            if [ "$t" = "$SPAWN_AT_SYSTEM_BIN" ]; then
-                if sudo install -Dm755 "$work/spawn-at" "$t" 2>/dev/null; then log "Installed spawn-at $src_v to $t"
-                else warn "Could not write $t (needs sudo); the copy in ~/.local/bin is used instead."; fi
-            else
-                mkdir -p "$(dirname "$t")"
-                install -Dm755 "$work/spawn-at" "$t" && log "Installed spawn-at $src_v to $t"
+            mkdir -p "$(dirname "$t")"
+            install -Dm755 "$work/spawn-at" "$t" && log "Installed spawn-at $src_v to $t"
+        fi
+
+        # A system-wide copy from an earlier installer is never created here, but one that exists
+        # is kept in step: a bare `spawn-at` can still resolve to it, and it is the copy the login
+        # updater could not change (it needs sudo).
+        t="$SPAWN_AT_SYSTEM_BIN"
+        if [ -e "$t" ]; then
+            v=$(spawn_at_version "$t")
+            if [ -z "$v" ]; then
+                warn "$t is not a spawn-at release build (a dev build?); left as it is."
+            elif semver_lt "$v" "$src_v"; then
+                if sudo install -Dm755 "$work/spawn-at" "$t" 2>/dev/null; then
+                    log "Updated the old system-wide copy $t from $v to $src_v"
+                else
+                    warn "$t is still $v (older than $src_v) and could not be updated without sudo."
+                    warn "  The shortcuts and the login updater use $SPAWN_AT_USER_BIN, so Win11Clip is not affected, but typing"
+                    warn "  spawn-at in a terminal may run the old copy. Update it:  sudo install -m755 $SPAWN_AT_USER_BIN $t"
+                    warn "  or remove it:  sudo rm $t"
+                fi
             fi
-        done
+        fi
     fi
 
     # Deploy the extension from the CLI that stays installed (the newest copy, never older than the
@@ -1075,11 +1153,14 @@ install_spawn_at() {
     # Configure auto-update on login
     local autostart_dir="$HOME/.config/autostart"
     mkdir -p "$autostart_dir"
-    cat > "$autostart_dir/spawn-at-autoupdate.desktop" << 'EOF'
+    local sa_exec
+    sa_exec=$(spawn_at_desktop_exec)
+    # Same text as the app writes (src-tauri/src/autostart_manager.rs), which rewrites the file when it differs.
+    cat > "$autostart_dir/spawn-at-autoupdate.desktop" << EOF
 [Desktop Entry]
 Type=Application
 Name=spawn-at Auto Update
-Exec=sh -c 'sleep 10 && (spawn-at update --headless || ~/.local/bin/spawn-at update --headless || /usr/local/bin/spawn-at update --headless)'
+Exec=sh -c 'sleep 10 && ($sa_exec update --headless || ~/.local/bin/spawn-at update --headless || /usr/local/bin/spawn-at update --headless)'
 Hidden=false
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
@@ -1292,8 +1373,10 @@ configure_gnome_shortcuts() {
 
     log "Configuring GNOME custom shortcuts..."
 
-    local target_cb_cmd="spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard"
-    local target_emoji_cmd="spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --emoji"
+    local sa_exe
+    sa_exe=$(spawn_at_shortcut_exe)
+    local target_cb_cmd="$sa_exe spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard"
+    local target_emoji_cmd="$sa_exe spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --emoji"
 
     local raw_bindings
     raw_bindings=$(run_user_gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null || echo "[]")
@@ -1590,6 +1673,11 @@ main() {
     if [ "$DRY_RUN" = true ]; then
         print_plan
         exit 0
+    fi
+
+    # Stop before anything is changed (an existing AppImage install is cleaned up further down).
+    if [ "$BUILD_FROM_SOURCE" != true ] && [[ "$SYSTEM_FAMILY_INFO" =~ arch ]]; then
+        arch_not_supported
     fi
     
     # Check WebKitGTK compatibility

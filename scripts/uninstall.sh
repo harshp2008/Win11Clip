@@ -51,11 +51,40 @@ echo "║     Win11 Clipboard History - Uninstaller                 ║"
 echo "╚═══════════════════════════════════════════════════════════╝"
 echo ""
 
+# Process ids of the running app: a process whose executable (or, for the wrapper script, whose script)
+# is named exactly win11-clipboard-history, win11-clipboard-history-bin or win11-clipboard-history.AppImage.
+# `pkill -f` is not used: it matches any command line that merely contains the text (an editor open on
+# a file with that name, a shell, this script's caller). `pkill -x` with the full name is not possible
+# either: the kernel keeps only 15 characters of a process name, so procps refuses longer names and
+# matches nothing. So take the processes named "win11-clipboard" (the first 15 characters) and keep
+# those whose executable name is exactly ours.
+app_pids() {
+    local pid exe name
+    for pid in $(pgrep -x win11-clipboard 2>/dev/null || true); do
+        exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || continue
+        exe="${exe% (deleted)}"
+        name="${exe##*/}"
+        case "$name" in
+            bash|sh|dash)   # the wrapper script: the script's name is the first argument that is not an option
+                name=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | awk 'NR>1 && $0 !~ /^-/ {print; exit}')
+                name="${name##*/}" ;;
+        esac
+        case "$name" in
+            win11-clipboard-history|win11-clipboard-history-bin|win11-clipboard-history.AppImage) echo "$pid" ;;
+        esac
+    done
+}
+
 # 1. Terminate running instances
 log "Terminating running instances..."
-pkill -f win11-clipboard-history 2>/dev/null || true
-pkill -f win11-clipboard-history.AppImage 2>/dev/null || true
-success "Processes terminated."
+APP_PIDS=$(app_pids)
+if [ -n "$APP_PIDS" ]; then
+    # shellcheck disable=SC2086  # one pid per word
+    kill $APP_PIDS 2>/dev/null || true
+    success "Stopped the running app (pid $(echo $APP_PIDS))."
+else
+    success "The app is not running."
+fi
 
 # 2. Clean Custom Extension
 log "Removing win11-clipboard-bridge extension..."
@@ -159,22 +188,23 @@ if [ -d "$WC_LOCAL" ]; then
 fi
 
 # 3. Prompt for spawn-at removal
+# The copy install.sh manages lives in ~/.local/bin. /usr/local/bin/spawn-at is only there on
+# machines that an earlier installer (or `make install`) put it on. Nothing else is ours: a
+# spawn-at in /usr/bin or elsewhere on the PATH belongs to a package or to you and is never touched.
+SPAWN_AT_USER_BIN="$HOME/.local/bin/spawn-at"
+SPAWN_AT_SYSTEM_BIN="/usr/local/bin/spawn-at"
 SPAWN_AT_BIN=""
-if command -v spawn-at &>/dev/null; then
-    SPAWN_AT_BIN=$(command -v spawn-at)
-elif [ -x "$HOME/.local/bin/spawn-at" ]; then
-    SPAWN_AT_BIN="$HOME/.local/bin/spawn-at"
-elif [ -x "/usr/local/bin/spawn-at" ]; then
-    SPAWN_AT_BIN="/usr/local/bin/spawn-at"
-elif [ -x "/usr/bin/spawn-at" ]; then
-    SPAWN_AT_BIN="/usr/bin/spawn-at"
+if [ -x "$SPAWN_AT_USER_BIN" ]; then
+    SPAWN_AT_BIN="$SPAWN_AT_USER_BIN"
+elif [ -x "$SPAWN_AT_SYSTEM_BIN" ]; then
+    SPAWN_AT_BIN="$SPAWN_AT_SYSTEM_BIN"
 fi
 
 SPAWN_AT_UUID="spawn-at@harsh.local"
 SPAWN_AT_LOCAL_EXT="$HOME/.local/share/gnome-shell/extensions/$SPAWN_AT_UUID"
 SPAWN_AT_SYS_EXT="/usr/share/gnome-shell/extensions/$SPAWN_AT_UUID"
 
-if [ -n "$SPAWN_AT_BIN" ] || [ -d "$SPAWN_AT_LOCAL_EXT" ] || [ -d "$SPAWN_AT_SYS_EXT" ]; then
+if [ -e "$SPAWN_AT_USER_BIN" ] || [ -e "$SPAWN_AT_SYSTEM_BIN" ] || [ -d "$SPAWN_AT_LOCAL_EXT" ] || [ -d "$SPAWN_AT_SYS_EXT" ]; then
     echo ""
     echo -e "${C_CYAN}┌──────────────────────────────────────────────────────────────┐${C_RESET}"
     echo -e "${C_CYAN}│${C_RESET}  ${C_BOLD}Component: spawn-at${C_RESET}                                         ${C_CYAN}│${C_RESET}"
@@ -279,8 +309,13 @@ if [ -n "$SPAWN_AT_BIN" ] || [ -d "$SPAWN_AT_LOCAL_EXT" ] || [ -d "$SPAWN_AT_SYS
         fi
         rm -rf "$SPAWN_AT_LOCAL_EXT"
         $SUDO_CMD rm -rf "$SPAWN_AT_SYS_EXT" 2>/dev/null || true
-        rm -f "$HOME/.local/bin/spawn-at"
-        $SUDO_CMD rm -f "/usr/local/bin/spawn-at" "/usr/bin/spawn-at" 2>/dev/null || true
+        rm -f "$SPAWN_AT_USER_BIN"
+        if [ -e "$SPAWN_AT_SYSTEM_BIN" ] || [ -L "$SPAWN_AT_SYSTEM_BIN" ]; then
+            $SUDO_CMD rm -f "$SPAWN_AT_SYSTEM_BIN" 2>/dev/null || true
+            if [ -e "$SPAWN_AT_SYSTEM_BIN" ] || [ -L "$SPAWN_AT_SYSTEM_BIN" ]; then
+                warn "Could not remove $SPAWN_AT_SYSTEM_BIN (needs sudo). Run: sudo rm $SPAWN_AT_SYSTEM_BIN"
+            fi
+        fi
         rm -rf "$HOME/.config/spawn-at"
         rm -f "$HOME/.config/autostart/spawn-at-autoupdate.desktop"
         rm -f "$HOME/.config/autostart/spawn-at-update-check.desktop"
