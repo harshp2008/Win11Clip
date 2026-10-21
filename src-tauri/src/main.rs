@@ -26,7 +26,7 @@ use win11_clipboard_history_lib::input_simulator::simulate_paste_keystroke;
 use win11_clipboard_history_lib::permission_checker;
 use win11_clipboard_history_lib::rendering_env;
 use win11_clipboard_history_lib::session::is_wayland;
-use win11_clipboard_history_lib::shortcut_setup;
+use win11_clipboard_history_lib::shortcut_manager;
 use win11_clipboard_history_lib::theme_manager::{self, ThemeInfo};
 use win11_clipboard_history_lib::user_settings::{UserSettings, UserSettingsManager};
 
@@ -1294,11 +1294,11 @@ fn main() {
             permission_checker::is_first_run,
             permission_checker::mark_first_run_complete,
             permission_checker::reset_first_run,
-            shortcut_setup::get_desktop_environment,
-            shortcut_setup::register_de_shortcut,
-            shortcut_setup::check_shortcut_tools,
-            shortcut_setup::detect_conflicts,
-            shortcut_setup::resolve_conflicts,
+            shortcut_manager::get_desktop_environment,
+            shortcut_manager::register_de_shortcut,
+            shortcut_manager::check_shortcut_tools,
+            shortcut_manager::detect_conflicts,
+            shortcut_manager::resolve_conflicts,
             autostart_manager::autostart_enable,
             autostart_manager::autostart_disable,
             autostart_manager::autostart_is_enabled,

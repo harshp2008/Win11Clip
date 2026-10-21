@@ -965,6 +965,7 @@ configure_gnome_shortcuts() {
     done < <(echo "$raw_bindings" | grep -o "'[^']*'" | tr -d "'")
 
     local found_cb=false
+    local found_alt=false
     local found_emoji=false
 
     for p in "${paths[@]}"; do
@@ -977,22 +978,26 @@ configure_gnome_shortcuts() {
         cmd=$(echo "$cmd" | sed "s/^'//;s/'$//")
         bind=$(echo "$bind" | sed "s/^'//;s/'$//")
 
-        if [[ "$cmd" == *"win11-clipboard-history"* ]] || [[ "$bind" == "<Super>v" ]] || [[ "$p" == *"win11-clipboard-history/"* && "$p" != *"emoji"* ]]; then
-            if [[ "$cmd" == *"--emoji"* ]] || [[ "$bind" == "<Super>period" ]] || [[ "$p" == *"emoji"* ]]; then
-                run_user_gsettings set "$schema" name "'Win11Clip Emoji Picker'" 2>/dev/null || true
-                run_user_gsettings set "$schema" command "'$target_emoji_cmd'" 2>/dev/null || true
-                run_user_gsettings set "$schema" binding "'<Super>period'" 2>/dev/null || true
-                found_emoji=true
-            else
-                run_user_gsettings set "$schema" name "'Win11Clip Clipboard History'" 2>/dev/null || true
-                run_user_gsettings set "$schema" command "'$target_cb_cmd'" 2>/dev/null || true
-                run_user_gsettings set "$schema" binding "'<Super>v'" 2>/dev/null || true
-                found_cb=true
-            fi
+        if [[ "$p" == *"win11-clipboard-history-emoji"* ]] || [[ "$cmd" == *"--emoji"* ]] || [[ "$bind" == "<Super>period" ]]; then
+            run_user_gsettings set "$schema" name "'Win11Clip Emoji Picker'" 2>/dev/null || true
+            run_user_gsettings set "$schema" command "'$target_emoji_cmd'" 2>/dev/null || true
+            run_user_gsettings set "$schema" binding "'<Super>period'" 2>/dev/null || true
+            found_emoji=true
+        elif [[ "$p" == *"win11-clipboard-history-alt"* ]] || [[ "$bind" == "<Ctrl><Alt>v" || "$bind" == "<Primary><Alt>v" ]]; then
+            run_user_gsettings set "$schema" name "'Win11Clip Clipboard History (Alt)'" 2>/dev/null || true
+            run_user_gsettings set "$schema" command "'$target_cb_cmd'" 2>/dev/null || true
+            run_user_gsettings set "$schema" binding "'<Ctrl><Alt>v'" 2>/dev/null || true
+            found_alt=true
+        elif [[ "$cmd" == *"win11-clipboard-history"* ]] || [[ "$bind" == "<Super>v" ]] || [[ "$p" == *"win11-clipboard-history"* ]]; then
+            run_user_gsettings set "$schema" name "'Win11Clip Clipboard History'" 2>/dev/null || true
+            run_user_gsettings set "$schema" command "'$target_cb_cmd'" 2>/dev/null || true
+            run_user_gsettings set "$schema" binding "'<Super>v'" 2>/dev/null || true
+            found_cb=true
         fi
     done
 
     local default_cb_path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/win11-clipboard-history/"
+    local default_alt_path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/win11-clipboard-history-alt/"
     local default_emoji_path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/win11-clipboard-history-emoji/"
 
     if [ "$found_cb" = false ]; then
@@ -1002,6 +1007,16 @@ configure_gnome_shortcuts() {
         run_user_gsettings set "$schema" binding "'<Super>v'" 2>/dev/null || true
         if [[ ! " ${paths[*]} " =~ " $default_cb_path " ]]; then
             paths+=("$default_cb_path")
+        fi
+    fi
+
+    if [ "$found_alt" = false ]; then
+        local schema="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$default_alt_path"
+        run_user_gsettings set "$schema" name "'Win11Clip Clipboard History (Alt)'" 2>/dev/null || true
+        run_user_gsettings set "$schema" command "'$target_cb_cmd'" 2>/dev/null || true
+        run_user_gsettings set "$schema" binding "'<Ctrl><Alt>v'" 2>/dev/null || true
+        if [[ ! " ${paths[*]} " =~ " $default_alt_path " ]]; then
+            paths+=("$default_alt_path")
         fi
     fi
 
@@ -1025,7 +1040,7 @@ configure_gnome_shortcuts() {
     formatted_array+="]"
 
     run_user_gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "$formatted_array" 2>/dev/null || true
-    success "Configured GNOME custom shortcuts (Super+V & Super+.)"
+    success "Configured GNOME custom shortcuts (Super+V, Ctrl+Alt+V & Super+.)"
 }
 
 setup_post_login_enable() {

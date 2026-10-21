@@ -1,4 +1,12 @@
-//! Linux Desktop Environment Shortcut Manager
+//! Linux Desktop Environment Shortcut Manager & Setup
+//!
+//! Consolidates all shortcut-related functionality into a single module:
+//! - Shortcut definitions with modern `spawn-at` positioning
+//! - Desktop Environment handlers (GNOME, KDE Plasma, XFCE, Cinnamon, MATE, COSMIC, LXQt, LXDE, i3, Sway, Hyprland)
+//! - Global shortcut registration and unregistration
+//! - Conflict detection and automatic resolution
+//! - Manual setup instructions for all supported desktop environments
+//! - Tauri IPC commands for onboarding wizard and settings app
 
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use std::env;
@@ -84,7 +92,7 @@ const SHORTCUTS: &[ShortcutConfig] = &[
     ShortcutConfig {
         id: "win11-clipboard-history",
         name: "Clipboard History",
-        command: "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history", 
+        command: "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history",
         args: "--clipboard",
         gnome_binding: "<Super>v",
         kde_binding: "Meta+V",
@@ -99,7 +107,7 @@ const SHORTCUTS: &[ShortcutConfig] = &[
     ShortcutConfig {
         id: "win11-clipboard-history-alt",
         name: "Clipboard History (Alt)",
-        command: "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history", 
+        command: "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history",
         args: "--clipboard",
         gnome_binding: "<Ctrl><Alt>v",
         kde_binding: "Ctrl+Alt+V",
@@ -114,7 +122,7 @@ const SHORTCUTS: &[ShortcutConfig] = &[
     ShortcutConfig {
         id: "win11-clipboard-history-emoji",
         name: "Emoji Picker",
-        command: "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history", 
+        command: "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history",
         args: "--emoji",
         gnome_binding: "<Super>period",
         kde_binding: "Meta+.",
@@ -135,28 +143,28 @@ const SHORTCUTS: &[ShortcutConfig] = &[
 #[derive(Debug)]
 pub enum ShortcutError {
     Io(io::Error),
-    CommandFailed { cmd: String, stderr: String },
+    CommandFailed(String),
     DependencyMissing(String),
-    ParseError(String),
     UnsupportedEnvironment(String),
+    ParseError(String),
 }
 
 impl From<io::Error> for ShortcutError {
-    fn from(e: io::Error) -> Self {
-        ShortcutError::Io(e)
+    fn from(err: io::Error) -> Self {
+        ShortcutError::Io(err)
     }
 }
 
 impl std::fmt::Display for ShortcutError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Io(e) => write!(f, "IO Error: {}", e),
-            Self::CommandFailed { cmd, stderr } => {
-                write!(f, "Command '{}' failed: {}", cmd, stderr)
+            ShortcutError::Io(e) => write!(f, "I/O error: {}", e),
+            ShortcutError::CommandFailed(msg) => write!(f, "Command failed: {}", msg),
+            ShortcutError::DependencyMissing(dep) => write!(f, "Required tool missing: {}", dep),
+            ShortcutError::UnsupportedEnvironment(env) => {
+                write!(f, "Unsupported environment: {}", env)
             }
-            Self::DependencyMissing(dep) => write!(f, "Missing dependency: {}", dep),
-            Self::ParseError(s) => write!(f, "Config parse error: {}", s),
-            Self::UnsupportedEnvironment(e) => write!(f, "Unsupported environment: {}", e),
+            ShortcutError::ParseError(msg) => write!(f, "Parse error: {}", msg),
         }
     }
 }
@@ -166,7 +174,7 @@ impl std::error::Error for ShortcutError {}
 type Result<T> = std::result::Result<T, ShortcutError>;
 
 // =============================================================================
-// Public API
+// Public Registration API
 // =============================================================================
 
 pub fn register_global_shortcut() {
@@ -188,7 +196,7 @@ pub fn register_global_shortcut() {
             Err(e) => eprintln!("[ShortcutManager] \u{2717} Failed '{}': {}", config.name, e),
         }
 
-        // Add a delay to prevent gsettings async race conditions where reading the 
+        // Add a delay to prevent gsettings async race conditions where reading the
         // custom-keybindings array too quickly returns stale data, overwriting previous additions.
         if handler.name().contains("GNOME") || handler.name().contains("Cinnamon") {
             std::thread::sleep(std::time::Duration::from_millis(500));
@@ -213,7 +221,7 @@ pub fn unregister_global_shortcut() {
             Err(e) => eprintln!("[ShortcutManager] \u{2717} Failed '{}': {}", config.name, e),
         }
 
-        // Add a delay to prevent gsettings async race conditions where reading the 
+        // Add a delay to prevent gsettings async race conditions where reading the
         // custom-keybindings array too quickly returns stale data, overwriting previous removals.
         if handler.name().contains("GNOME") || handler.name().contains("Cinnamon") {
             std::thread::sleep(std::time::Duration::from_millis(500));
@@ -347,76 +355,114 @@ impl Utils {
 
     fn run(cmd: &str, args: &[&str]) -> Result<String> {
         let output = Command::new(cmd).args(args).output()?;
-
-        if !output.status.success() {
-            return Err(ShortcutError::CommandFailed {
-                cmd: cmd.to_string(),
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            });
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        } else {
+            Err(ShortcutError::CommandFailed(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ))
         }
-
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
-    /// Reads a file, creates a .bak copy, modifies content via callback,
-    /// then writes back atomically using a temp file rename strategy.
-    /// Returns Ok(true) if file was modified, Ok(false) if no changes were needed.
-    fn modify_file_atomic<F>(path: &Path, modifier: F) -> Result<bool>
+    /// Atomically modifies a file using a temporary file and rename.
+    ///
+    /// Preserves file permissions and creates a backup of the original file.
+    /// Returns `Ok(true)` if the file was modified, `Ok(false)` if no changes were needed,
+    /// or an error if the operation failed.
+    fn modify_file_atomic<F>(path: &Path, modify_fn: F) -> Result<bool>
     where
-        F: FnOnce(String) -> Result<Option<String>>,
+        F: FnOnce(&str) -> Result<Option<String>>,
     {
-        if !path.exists() {
-            // Create directory structure if missing
-            if let Some(parent) = path.parent() {
+        // 1. Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            if !parent.exists() {
                 fs::create_dir_all(parent)?;
             }
         }
 
-        let content = if path.exists() {
-            // Create a single backup file (only if it doesn't exist yet)
-            let bak_path = path.with_extension("bak");
-            if !bak_path.exists() {
-                fs::copy(path, &bak_path)?;
-                println!("[Utils] Created backup: {:?}", bak_path);
-            }
-
-            fs::read_to_string(path)?
+        // 2. Read existing content or default to empty
+        let (content, original_permissions) = if path.exists() {
+            let content = fs::read_to_string(path)?;
+            let perms = fs::metadata(path).ok().map(|m| m.permissions());
+            (content, perms)
         } else {
-            String::new()
+            (String::new(), None)
         };
 
-        // Run modifier logic
-        let new_content = match modifier(content) {
-            Ok(Some(s)) => s,
-            Ok(None) => return Ok(false), // No changes needed
-            Err(e) => return Err(e),
+        // 3. Apply modification
+        let new_content = match modify_fn(&content)? {
+            Some(c) => c,
+            None => return Ok(false), // No changes needed
         };
 
-        // Atomic Write Strategy: Write to .tmp, then rename
-        let tmp_path = path.with_extension(format!(
-            "tmp.{}",
-            SystemTime::now()
+        // Don't write if content hasn't changed
+        if new_content == content {
+            return Ok(false);
+        }
+
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+
+        // 4. Create backup of existing file
+        if path.exists() {
+            let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap_or_else(|_| std::time::Duration::from_secs(0))
-                .as_millis()
-        ));
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let backup_path = parent.join(format!(
+                ".{}.backup.{}",
+                path.file_name().unwrap_or_default().to_string_lossy(),
+                timestamp
+            ));
+            // Best-effort backup - don't fail if we can't create it, but log warning
+            if let Err(e) = fs::copy(path, &backup_path) {
+                eprintln!(
+                    "[ShortcutManager] Warning: Failed to create backup: {}",
+                    e
+                );
+            }
+        }
 
-        let mut file = fs::File::create(&tmp_path)?;
-        file.write_all(new_content.as_bytes())?;
-        file.sync_all()?; // Ensure flush to disk
+        // 5. Write to temporary file in the same directory (required for atomic rename)
+        let temp_file_name = format!(
+            ".{}.tmp.{}",
+            path.file_name().unwrap_or_default().to_string_lossy(),
+            Uuid::new_v4()
+        );
+        let temp_path = parent.join(&temp_file_name);
 
-        // Atomic rename
-        fs::rename(&tmp_path, path)?;
+        // Write content and ensure it's flushed to disk
+        {
+            let mut file = fs::File::create(&temp_path)?;
+            file.write_all(new_content.as_bytes())?;
+            file.sync_all()?;
+        }
 
-        Ok(true) // File was modified
+        // 6. Restore original permissions if they existed, or set safe defaults (0644)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Some(perms) = original_permissions {
+                let _ = fs::set_permissions(&temp_path, perms);
+            } else {
+                // Default to user read/write, group/others read (0644)
+                let _ = fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o644));
+            }
+        }
+
+        // 7. Atomic rename
+        if let Err(e) = fs::rename(&temp_path, path) {
+            // Clean up temp file on failure
+            let _ = fs::remove_file(&temp_path);
+            return Err(ShortcutError::Io(e));
+        }
+
+        Ok(true)
     }
 }
 
 // =============================================================================
-// Implementations
+// GSettings Implementation (GNOME, Budgie, Deepin, Cinnamon)
 // =============================================================================
-
-// --- GNOME / Cinnamon Shared Logic ---
 
 struct GSettings {
     schema: &'static str,
@@ -446,35 +492,26 @@ impl GSettings {
 
     fn get_list(&self) -> Result<Vec<String>> {
         let output = Utils::run("gsettings", &["get", self.schema, self.list_key])?;
-
-        if output.contains("@as []") || output == "[]" || output.trim().is_empty() {
+        let trimmed = output.trim();
+        if trimmed == "@as []" || trimmed == "[]" {
             return Ok(Vec::new());
         }
 
-        let cleaned = output
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .replace(['\'', '"'], ""); // Remove both single and double quotes for parsing
-
-        Ok(cleaned
+        // Clean formatting: remove brackets and single quotes
+        let clean = trimmed.trim_start_matches('[').trim_end_matches(']');
+        let items: Vec<String> = clean
             .split(',')
-            .map(|s| s.trim().to_string())
+            .map(|s| s.trim().trim_matches('\'').to_string())
             .filter(|s| !s.is_empty())
-            .collect())
+            .collect();
+
+        Ok(items)
     }
 
-    fn set_list(&self, items: &[String]) -> Result<()> {
-        let formatted_list = if items.is_empty() {
-            "[]".to_string()
-        } else {
-            // Reconstruct safely
-            let inner = items
-                .iter()
-                .map(|s| format!("'{}'", s))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("[{}]", inner)
-        };
+    fn set_list(&self, list: &[String]) -> Result<()> {
+        let formatted_items: Vec<String> = list.iter().map(|s| format!("'{}'", s)).collect();
+        let formatted_list = format!("[{}]", formatted_items.join(", "));
+
         Utils::run(
             "gsettings",
             &["set", self.schema, self.list_key, &formatted_list],
@@ -488,7 +525,7 @@ impl GSettings {
         }
 
         let mut list = self.get_list()?;
-        
+
         let expected_path = format!("{}/{}/", self.path_prefix, shortcut.id);
         let schema_path = format!("{}:{}", self.binding_schema, expected_path);
 
@@ -802,7 +839,6 @@ impl ShortcutHandler for MateHandler {
 
         let full_cmd = s.full_command();
 
-        // Logic similar to original but with Utils::run for better errors
         for i in 1..=12 {
             let cmd_key = format!("command-{}", i);
             let current = Utils::run(
@@ -909,7 +945,6 @@ impl CosmicHandler {
                     "super" | "meta" => "Super".to_string(),
                     "shift" => "Shift".to_string(),
                     _ => {
-                        // Fallback: normalize capitalization (First letter uppercase + rest lowercase)
                         let mut chars = m.chars();
                         match chars.next() {
                             Some(first) => {
@@ -971,27 +1006,22 @@ impl ShortcutHandler for CosmicHandler {
         let entry = Self::build_entry(s);
 
         Utils::modify_file_atomic(&path, |content| {
-            // Check if this command is already registered to avoid duplicates
             if content.contains(&format!("Spawn(\"{}\")", full_cmd)) {
                 return Ok(None);
             }
 
             let trimmed = content.trim();
 
-            // If file is empty or doesn't start with '{', create new structure
             if trimmed.is_empty() {
                 return Ok(Some(format!("{{\n{}\n}}", entry)));
             }
 
-            // File should be a RON map: { ... }
             if !trimmed.starts_with('{') {
-                // Reject unexpected formats instead of trying to wrap potentially malformed content
                 return Err(ShortcutError::ParseError(
                     "Invalid COSMIC config format - expected RON map starting with '{'".into(),
                 ));
             }
 
-            // Find the last '}' and insert before it
             if let Some(pos) = content.rfind('}') {
                 let mut new_content = content.to_string();
                 new_content.insert_str(pos, &format!("{}\n", entry));
@@ -1022,9 +1052,6 @@ impl ShortcutHandler for CosmicHandler {
                 return Ok(None);
             }
 
-            // Parse and remove the entry block containing our command
-            // RON format: (key_tuple): Value, - we track depth to find entry boundaries
-            // depth starts at 0 before the opening '{'; depth 1 = inside outer map {}, depth 2+ = inside an entry
             let mut result = String::new();
             let mut depth = 0;
             let mut in_entry = false;
@@ -1034,14 +1061,12 @@ impl ShortcutHandler for CosmicHandler {
             for c in content.chars() {
                 prev_depth = depth;
 
-                // Update depth first
                 if c == '{' || c == '(' {
                     depth += 1;
                 } else if c == '}' || c == ')' {
                     depth -= 1;
                 }
 
-                // Detect entry start: '(' that takes us from depth 1 to depth 2
                 if c == '(' && prev_depth == 1 && depth == 2 {
                     entry_start = result.len();
                     in_entry = true;
@@ -1049,12 +1074,9 @@ impl ShortcutHandler for CosmicHandler {
 
                 result.push(c);
 
-                // Detect entry end: ',' when we're at depth 1 (after the Spawn(...) closed)
                 if in_entry && depth == 1 && c == ',' {
-                    // Check if this entry contains our command
                     let entry_content = &result[entry_start..];
                     if entry_content.contains(&spawn_pattern) {
-                        // Remove this entry (including leading whitespace)
                         let trim_start = result[..entry_start].trim_end().len();
                         result.truncate(trim_start);
                         result.push('\n');
@@ -1063,7 +1085,6 @@ impl ShortcutHandler for CosmicHandler {
                 }
             }
 
-            // Clean up sequences of more than two consecutive newlines in a single pass
             let mut cleaned = String::with_capacity(result.len());
             let mut newline_count = 0;
             for ch in result.chars() {
@@ -1098,9 +1119,6 @@ impl ShortcutHandler for LxqtHandler {
         let path = PathBuf::from(home).join(".config/lxqt/globalkeyshortcuts.conf");
 
         let full_cmd = s.full_command();
-        // LXQt uses INI format for shortcuts
-        // Section name is URL-encoded keybinding followed by shortcut ID
-        // Only encode characters problematic for INI format: / \ [ ] = ; # and spaces
         let encoded_binding = utf8_percent_encode(s.kde_binding, INI_SECTION_ENCODE).to_string();
         let section = format!("{}/{}", encoded_binding, s.id);
         let entry = format!(
@@ -1133,7 +1151,7 @@ impl ShortcutHandler for LxqtHandler {
                 return Ok(None); // Already exists
             }
 
-            let mut new_content = content.clone();
+            let mut new_content = content.to_string();
             new_content.push_str(&entry);
             Ok(Some(new_content))
         })?;
@@ -1149,7 +1167,6 @@ impl ShortcutHandler for LxqtHandler {
             return Ok(());
         }
 
-        // Use same encoding as register for consistency
         let encoded_binding = utf8_percent_encode(s.kde_binding, INI_SECTION_ENCODE).to_string();
         let section = format!("{}/{}", encoded_binding, s.id);
 
@@ -1192,10 +1209,7 @@ impl ShortcutHandler for LxdeHandler {
         let home = env::var("HOME")
             .map_err(|_| ShortcutError::UnsupportedEnvironment("HOME not set".into()))?;
 
-        // LXDE uses Openbox for window management
         let path = PathBuf::from(&home).join(".config/openbox/lxde-rc.xml");
-
-        // Fallback to default openbox config if LXDE-specific doesn't exist
         let path = if path.exists() {
             path
         } else {
@@ -1210,8 +1224,6 @@ impl ShortcutHandler for LxdeHandler {
         }
 
         let full_cmd = s.full_command();
-        // The keybind XML to add - use the LXDE/Openbox-specific binding
-        // Escape XML special characters to prevent XML injection
         let escaped_binding = escape_xml(s.lxde_binding);
         let escaped_cmd = escape_xml(&full_cmd);
         let keybind = format!(
@@ -1228,14 +1240,10 @@ impl ShortcutHandler for LxdeHandler {
                 return Ok(None); // Already exists
             }
 
-            // Find the </keyboard> closing tag and insert before it
             if let Some(pos) = content.find("</keyboard>") {
-                let mut new_content = content.clone();
+                let mut new_content = content.to_string();
                 new_content.insert_str(pos, &format!("{}\n  ", keybind));
-
-                // Trigger openbox reconfigure
                 let _ = Utils::run("openbox", &["--reconfigure"]);
-
                 return Ok(Some(new_content));
             }
 
@@ -1270,8 +1278,6 @@ impl ShortcutHandler for LxdeHandler {
                 return Ok(None);
             }
 
-            // Remove the keybind block - this is a simplified approach
-            // A proper XML parser would be better but adds dependency
             let pattern = format!(
                 r#"    <keybind key="{}">
       <action name="Execute">
@@ -1282,10 +1288,7 @@ impl ShortcutHandler for LxdeHandler {
             );
 
             let new_content = content.replace(&pattern, "");
-
-            // Trigger openbox reconfigure
             let _ = Utils::run("openbox", &["--reconfigure"]);
-
             Ok(Some(new_content))
         })?;
         Ok(())
@@ -1300,7 +1303,6 @@ impl I3Handler {
         let home = env::var("HOME")
             .map_err(|_| ShortcutError::UnsupportedEnvironment("HOME not set".into()))?;
 
-        // Check common i3 config locations
         let paths = vec![
             PathBuf::from(&home).join(".config/i3/config"),
             PathBuf::from(&home).join(".i3/config"),
@@ -1312,12 +1314,10 @@ impl I3Handler {
             }
         }
 
-        // Default to the XDG config path
         Ok(PathBuf::from(&home).join(".config/i3/config"))
     }
 
     fn reload_i3() {
-        // Send reload command to i3
         let _ = Utils::run("i3-msg", &["reload"]);
     }
 }
@@ -1331,11 +1331,9 @@ impl ShortcutHandler for I3Handler {
         let path = Self::get_config_path()?;
 
         let full_cmd = s.full_command();
-        // i3 binding format: bindsym $mod+v exec command
         let binding_line = format!("bindsym {} exec {}", s.i3_binding, full_cmd);
 
         let modified = Utils::modify_file_atomic(&path, |content| {
-            // Check if already registered
             if content.contains(&full_cmd) {
                 return Ok(None);
             }
@@ -1343,9 +1341,11 @@ impl ShortcutHandler for I3Handler {
             let mut lines: Vec<String> = content.lines().map(String::from).collect();
             let mut updated_existing = false;
 
-            // If an old win11-clipboard-history binding line exists for this binding, update it
             for line in lines.iter_mut() {
-                if line.contains("win11-clipboard-history") && line.contains("bindsym") && line.contains(s.i3_binding) {
+                if line.contains("win11-clipboard-history")
+                    && line.contains("bindsym")
+                    && line.contains(s.i3_binding)
+                {
                     *line = binding_line.clone();
                     updated_existing = true;
                     break;
@@ -1360,18 +1360,15 @@ impl ShortcutHandler for I3Handler {
 
             for line in lines.iter_mut() {
                 let trimmed = line.trim().to_lowercase();
-                // Skip if already a comment
                 if trimmed.starts_with('#') {
                     continue;
                 }
-                // Check for existing mod+v bindings (word boundary check)
                 if trimmed.starts_with("bindsym") && has_mod_v_binding(&trimmed) {
                     *line = format!("# {} # Commented by win11-clipboard-history", line);
                     had_existing = true;
                 }
             }
 
-            // Add our binding at the end
             lines.push("\n# Clipboard History (added by win11-clipboard-history)".to_string());
             lines.push(binding_line.clone());
 
@@ -1382,7 +1379,6 @@ impl ShortcutHandler for I3Handler {
             Ok(Some(lines.join("\n")))
         })?;
 
-        // Reload i3 only after file was successfully written
         if modified {
             Self::reload_i3();
         }
@@ -1407,19 +1403,16 @@ impl ShortcutHandler for I3Handler {
             let mut skip_comment = false;
 
             for line in lines {
-                // Skip our comment line
                 if line.contains("# Clipboard History (added by win11-clipboard-history)") {
                     skip_comment = true;
                     continue;
                 }
-                // Skip our binding line
                 if skip_comment && line.contains(&full_cmd) {
                     skip_comment = false;
                     continue;
                 }
                 skip_comment = false;
 
-                // Restore commented out bindings
                 if line.contains("# Commented by win11-clipboard-history") {
                     let restored = line
                         .replace("# ", "")
@@ -1433,7 +1426,6 @@ impl ShortcutHandler for I3Handler {
             Ok(Some(new_lines.join("\n")))
         })?;
 
-        // Reload i3 only after file was successfully written
         if modified {
             Self::reload_i3();
         }
@@ -1487,9 +1479,11 @@ impl ShortcutHandler for SwayHandler {
             let mut lines: Vec<String> = content.lines().map(String::from).collect();
             let mut updated_existing = false;
 
-            // If an old win11-clipboard-history binding line exists for this binding, update it
             for line in lines.iter_mut() {
-                if line.contains("win11-clipboard-history") && line.contains("bindsym") && line.contains(s.sway_binding) {
+                if line.contains("win11-clipboard-history")
+                    && line.contains("bindsym")
+                    && line.contains(s.sway_binding)
+                {
                     *line = binding_line.clone();
                     updated_existing = true;
                     break;
@@ -1507,7 +1501,6 @@ impl ShortcutHandler for SwayHandler {
                 if trimmed.starts_with('#') {
                     continue;
                 }
-                // Check for existing mod+v bindings (word boundary check)
                 if trimmed.starts_with("bindsym") && has_mod_v_binding(&trimmed) {
                     *line = format!("# {} # Commented by win11-clipboard-history", line);
                     had_existing = true;
@@ -1524,7 +1517,6 @@ impl ShortcutHandler for SwayHandler {
             Ok(Some(lines.join("\n")))
         })?;
 
-        // Reload Sway only after file was successfully written
         if modified {
             Self::reload_sway();
         }
@@ -1572,7 +1564,6 @@ impl ShortcutHandler for SwayHandler {
             Ok(Some(new_lines.join("\n")))
         })?;
 
-        // Reload Sway only after file was successfully written
         if modified {
             Self::reload_sway();
         }
@@ -1605,7 +1596,6 @@ impl ShortcutHandler for HyprlandHandler {
         let path = Self::get_config_path()?;
 
         let full_cmd = s.full_command();
-        // Hyprland format: bind = SUPER, V, exec, command
         let binding_line = format!("bind = {}, exec, {}", s.hyprland_binding, full_cmd);
 
         Utils::modify_file_atomic(&path, |content| {
@@ -1616,9 +1606,11 @@ impl ShortcutHandler for HyprlandHandler {
             let mut lines: Vec<String> = content.lines().map(String::from).collect();
             let mut updated_existing = false;
 
-            // If an old win11-clipboard-history binding line exists for this binding, update it
             for line in lines.iter_mut() {
-                if line.contains("win11-clipboard-history") && line.contains("bind") && line.contains(&s.hyprland_binding) {
+                if line.contains("win11-clipboard-history")
+                    && line.contains("bind")
+                    && line.contains(&s.hyprland_binding)
+                {
                     *line = binding_line.clone();
                     updated_existing = true;
                     break;
@@ -1636,7 +1628,6 @@ impl ShortcutHandler for HyprlandHandler {
                 if trimmed.starts_with('#') {
                     continue;
                 }
-                // Check for existing SUPER, V bindings
                 if trimmed.starts_with("bind")
                     && trimmed.contains("super")
                     && (trimmed.contains(", v,") || trimmed.contains(",v,"))
@@ -1653,7 +1644,6 @@ impl ShortcutHandler for HyprlandHandler {
                 println!("[HyprlandHandler] Commented out existing SUPER+V binding(s)");
             }
 
-            // Hyprland auto-reloads config, no explicit reload needed
             Ok(Some(lines.join("\n")))
         })?;
         Ok(())
@@ -1700,5 +1690,985 @@ impl ShortcutHandler for HyprlandHandler {
             Ok(Some(new_lines.join("\n")))
         })?;
         Ok(())
+    }
+}
+
+// =============================================================================
+// Conflict Detection & Resolution
+// =============================================================================
+
+/// Represents a detected shortcut conflict
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ShortcutConflict {
+    /// The shortcut binding that conflicts (e.g., "Super+V")
+    pub binding: String,
+    /// What the shortcut currently does
+    pub current_action: String,
+    /// The desktop environment or application that owns this shortcut
+    pub owner: String,
+    /// Command or instructions to resolve the conflict
+    pub resolution_command: Option<String>,
+    /// Human-readable resolution steps
+    pub resolution_steps: String,
+}
+
+/// Result of conflict detection for all shortcuts
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ConflictDetectionResult {
+    /// Desktop environment detected
+    pub desktop_environment: String,
+    /// List of detected conflicts
+    pub conflicts: Vec<ShortcutConflict>,
+    /// Whether automatic resolution is possible
+    pub can_auto_resolve: bool,
+    /// General message about conflicts
+    pub message: String,
+}
+
+/// Main entry point for conflict detection
+pub fn detect_shortcut_conflicts() -> ConflictDetectionResult {
+    let de = get_desktop_environment();
+    let conflicts = match de.as_str() {
+        "GNOME" => detect_gnome_conflicts(),
+        "Pop" | "Pop!_OS" => detect_pop_shell_conflicts(),
+        "COSMIC" => detect_cosmic_conflicts(),
+        "KDE Plasma" => detect_kde_conflicts(),
+        "i3" | "i3wm" => detect_i3_conflicts(),
+        "Sway" => detect_sway_conflicts(),
+        "Hyprland" => detect_hyprland_conflicts(),
+        "Cinnamon" => detect_cinnamon_conflicts(),
+        "XFCE" => detect_xfce_conflicts(),
+        _ => Vec::new(),
+    };
+
+    let can_auto_resolve =
+        !conflicts.is_empty() && conflicts.iter().all(|c| c.resolution_command.is_some());
+    let message = if conflicts.is_empty() {
+        "No shortcut conflicts detected.".to_string()
+    } else {
+        format!(
+            "{} shortcut conflict(s) detected that may prevent Super+V from working.",
+            conflicts.len()
+        )
+    };
+
+    ConflictDetectionResult {
+        desktop_environment: de,
+        conflicts,
+        can_auto_resolve,
+        message,
+    }
+}
+
+/// Resolve all detected conflicts automatically where possible
+pub fn auto_resolve_conflicts() -> std::result::Result<Vec<String>, String> {
+    let result = detect_shortcut_conflicts();
+    let mut resolved = Vec::new();
+
+    for conflict in result.conflicts {
+        if let Some(cmd) = conflict.resolution_command {
+            match run_resolution_command(&cmd) {
+                Ok(_) => resolved.push(format!(
+                    "Resolved: {} ({})",
+                    conflict.owner, conflict.binding
+                )),
+                Err(e) => return Err(format!("Failed to resolve {}: {}", conflict.owner, e)),
+            }
+        }
+    }
+
+    Ok(resolved)
+}
+
+fn run_resolution_command(cmd: &str) -> std::result::Result<(), String> {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+fn gsettings_get(schema: &str, key: &str) -> Option<String> {
+    if !Utils::command_exists("gsettings") {
+        return None;
+    }
+    Command::new("gsettings")
+        .args(["get", schema, key])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+// GNOME Conflicts
+fn detect_gnome_conflicts() -> Vec<ShortcutConflict> {
+    let mut conflicts = Vec::new();
+
+    if let Some(binding) = gsettings_get("org.gnome.shell.keybindings", "toggle-message-tray") {
+        let binding_lower = binding.to_lowercase();
+        if binding_lower.contains("super") && binding_lower.contains("v") {
+            conflicts.push(ShortcutConflict {
+                binding: "<Super>v".to_string(),
+                current_action: "Open Notification Center / Message Tray".to_string(),
+                owner: "GNOME Shell".to_string(),
+                resolution_command: Some(
+                    "gsettings set org.gnome.shell.keybindings toggle-message-tray \"['<Super><Shift>v']\"".to_string()
+                ),
+                resolution_steps: r#"**To resolve manually:**
+1. Open Settings → Keyboard → Keyboard Shortcuts
+2. Search for "Notification" or "Message Tray"
+3. Change Super+V to Super+Shift+V (or disable it)
+
+**Or run this command:**
+```
+gsettings set org.gnome.shell.keybindings toggle-message-tray "['<Super><Shift>v']"
+```"#.to_string(),
+            });
+        }
+    }
+
+    if let Some(binding) = gsettings_get("org.gnome.shell.keybindings", "toggle-quick-settings") {
+        let binding_lower = binding.to_lowercase();
+        if binding_lower.contains("super") && binding_lower.contains("v") {
+            conflicts.push(ShortcutConflict {
+                binding: "<Super>v".to_string(),
+                current_action: "Toggle Quick Settings".to_string(),
+                owner: "GNOME Shell".to_string(),
+                resolution_command: Some(
+                    "gsettings set org.gnome.shell.keybindings toggle-quick-settings \"[]\""
+                        .to_string(),
+                ),
+                resolution_steps:
+                    "Disable the Quick Settings shortcut in GNOME Settings → Keyboard → Shortcuts"
+                        .to_string(),
+            });
+        }
+    }
+
+    conflicts
+}
+
+// Pop!_OS Conflicts
+fn detect_pop_shell_conflicts() -> Vec<ShortcutConflict> {
+    let mut conflicts = Vec::new();
+    conflicts.extend(detect_gnome_conflicts());
+
+    if let Some(binding) = gsettings_get("org.gnome.shell.extensions.pop-shell", "tile-enter") {
+        let binding_lower = binding.to_lowercase();
+        if binding_lower.contains("super") && binding_lower.contains("v") {
+            conflicts.push(ShortcutConflict {
+                binding: "<Super>v".to_string(),
+                current_action: "Enter Tiling Mode".to_string(),
+                owner: "Pop Shell".to_string(),
+                resolution_command: Some(
+                    "gsettings set org.gnome.shell.extensions.pop-shell tile-enter \"['<Super><Shift>v']\"".to_string()
+                ),
+                resolution_steps: r#"**To resolve manually:**
+1. Open Pop!_OS Settings → Keyboard → Customize Shortcuts
+2. Find "Pop Shell: Enter Tile Mode"
+3. Change it to a different binding
+
+**Or run:**
+```
+gsettings set org.gnome.shell.extensions.pop-shell tile-enter "['<Super><Shift>v']"
+```"#.to_string(),
+            });
+        }
+    }
+
+    conflicts
+}
+
+// COSMIC Conflicts
+fn detect_cosmic_conflicts() -> Vec<ShortcutConflict> {
+    let mut conflicts = Vec::new();
+
+    let home = match env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return conflicts,
+    };
+
+    let shortcuts_path =
+        PathBuf::from(&home).join(".config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom");
+
+    if let Ok(content) = fs::read_to_string(&shortcuts_path) {
+        if content.to_lowercase().contains("super")
+            && content.to_lowercase().contains("\"v\"")
+            && !content.contains("win11-clipboard-history")
+        {
+            conflicts.push(ShortcutConflict {
+                binding: "Super+V".to_string(),
+                current_action: "Unknown COSMIC shortcut".to_string(),
+                owner: "COSMIC Desktop".to_string(),
+                resolution_command: None,
+                resolution_steps: r#"**To resolve manually:**
+1. Open COSMIC Settings → Keyboard → Shortcuts
+2. Find any shortcut using Super+V
+3. Change it to a different binding or remove it"#
+                    .to_string(),
+            });
+        }
+    }
+
+    let system_shortcuts = PathBuf::from(&home)
+        .join(".config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions");
+
+    if let Ok(content) = fs::read_to_string(&system_shortcuts) {
+        if content.to_lowercase().contains("super") && content.to_lowercase().contains("\"v\"") {
+            conflicts.push(ShortcutConflict {
+                binding: "Super+V".to_string(),
+                current_action: "COSMIC System Action".to_string(),
+                owner: "COSMIC Desktop".to_string(),
+                resolution_command: None,
+                resolution_steps: r#"**COSMIC System Shortcut Conflict:**
+1. Open COSMIC Settings → Keyboard → Shortcuts → System
+2. Find the Super+V binding
+3. Change or disable it"#
+                    .to_string(),
+            });
+        }
+    }
+
+    conflicts
+}
+
+// KDE Conflicts
+fn detect_kde_conflicts() -> Vec<ShortcutConflict> {
+    let mut conflicts = Vec::new();
+
+    let home = match env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return conflicts,
+    };
+
+    let shortcuts_path = PathBuf::from(&home).join(".config/kglobalshortcutsrc");
+
+    if let Ok(content) = fs::read_to_string(&shortcuts_path) {
+        for line in content.lines() {
+            if line.contains("Meta+V") || line.contains("Meta+v") {
+                if let Some(action) = extract_kde_action(&content, line) {
+                    if action.contains("clipboard-history") || action.contains("win11") {
+                        continue;
+                    }
+
+                    conflicts.push(ShortcutConflict {
+                        binding: "Meta+V".to_string(),
+                        current_action: action.clone(),
+                        owner: "KDE Plasma".to_string(),
+                        resolution_command: None,
+                        resolution_steps: format!(
+                            r#"**To resolve manually:**
+1. Open System Settings → Shortcuts → Global Shortcuts
+2. Find "{}"
+3. Change or clear the Meta+V binding
+
+**Alternative:** Use the search function to find "Meta+V" bindings"#,
+                            action
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    let klipper_path = PathBuf::from(&home).join(".config/klipperrc");
+    if klipper_path.exists() {
+        if let Ok(content) = fs::read_to_string(&klipper_path) {
+            if content.contains("Meta+V") {
+                conflicts.push(ShortcutConflict {
+                    binding: "Meta+V".to_string(),
+                    current_action: "Klipper Clipboard History".to_string(),
+                    owner: "Klipper".to_string(),
+                    resolution_command: None,
+                    resolution_steps: r#"**Klipper Conflict:**
+KDE's built-in clipboard manager (Klipper) may use Meta+V.
+
+1. Right-click the Klipper icon in the system tray
+2. Click "Configure Klipper"
+3. Go to "Shortcuts" and change or disable the shortcut
+
+**Alternatively:** Disable Klipper entirely if you prefer this app."#
+                        .to_string(),
+                });
+            }
+        }
+    }
+
+    conflicts
+}
+
+fn extract_kde_action(content: &str, target_line: &str) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut current_section = String::new();
+
+    for line in lines {
+        if line.starts_with('[') && line.ends_with(']') {
+            current_section = line[1..line.len() - 1].to_string();
+        }
+        if line == target_line {
+            if let Some(eq_pos) = line.find('=') {
+                let action_part = &line[..eq_pos];
+                return Some(format!("{}: {}", current_section, action_part));
+            }
+            return Some(current_section);
+        }
+    }
+    None
+}
+
+// i3 Conflicts
+fn detect_i3_conflicts() -> Vec<ShortcutConflict> {
+    let mut conflicts = Vec::new();
+    let config_paths = get_i3_config_paths();
+
+    for path in config_paths {
+        if let Ok(content) = fs::read_to_string(&path) {
+            for line in content.lines() {
+                let line_lower = line.to_lowercase().trim().to_string();
+
+                if line_lower.starts_with('#') {
+                    continue;
+                }
+
+                if (line_lower.contains("bindsym") || line_lower.contains("bindcode"))
+                    && (line_lower.contains("mod4+v") || line_lower.contains("$mod+v"))
+                    && !line_lower.contains("clipboard-history")
+                    && !line_lower.contains("win11")
+                {
+                    let action = line
+                        .split_whitespace()
+                        .skip(2)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+
+                    conflicts.push(ShortcutConflict {
+                        binding: "$mod+v / Mod4+v".to_string(),
+                        current_action: if action.is_empty() {
+                            "Unknown action".to_string()
+                        } else {
+                            action
+                        },
+                        owner: "i3 config".to_string(),
+                        resolution_command: None,
+                        resolution_steps: format!(
+                            r#"**i3 Config Conflict:**
+Found in: {}
+
+**To resolve:**
+1. Edit your i3 config: `{}`
+2. Find the line with `bindsym $mod+v` or `bindsym Mod4+v`
+3. Change it to a different binding or comment it out
+
+**Then add:**
+```
+bindsym $mod+v exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
+```
+
+4. Reload i3: Press $mod+Shift+r"#,
+                            path.display(),
+                            path.display()
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    conflicts
+}
+
+fn get_i3_config_paths() -> Vec<PathBuf> {
+    let home = env::var("HOME").unwrap_or_default();
+    vec![
+        PathBuf::from(&home).join(".config/i3/config"),
+        PathBuf::from(&home).join(".i3/config"),
+        PathBuf::from("/etc/i3/config"),
+    ]
+}
+
+// Sway Conflicts
+fn detect_sway_conflicts() -> Vec<ShortcutConflict> {
+    let mut conflicts = Vec::new();
+    let config_paths = get_sway_config_paths();
+
+    for path in config_paths {
+        if let Ok(content) = fs::read_to_string(&path) {
+            for line in content.lines() {
+                let line_lower = line.to_lowercase().trim().to_string();
+
+                if line_lower.starts_with('#') {
+                    continue;
+                }
+
+                if (line_lower.contains("bindsym") || line_lower.contains("bindcode"))
+                    && (line_lower.contains("mod4+v") || line_lower.contains("$mod+v"))
+                    && !line_lower.contains("clipboard-history")
+                    && !line_lower.contains("win11")
+                {
+                    let action = line
+                        .split_whitespace()
+                        .skip(2)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+
+                    conflicts.push(ShortcutConflict {
+                        binding: "$mod+v / Mod4+v".to_string(),
+                        current_action: if action.is_empty() {
+                            "Unknown action".to_string()
+                        } else {
+                            action
+                        },
+                        owner: "Sway config".to_string(),
+                        resolution_command: None,
+                        resolution_steps: format!(
+                            r#"**Sway Config Conflict:**
+Found in: {}
+
+**To resolve:**
+1. Edit your Sway config: `{}`
+2. Find the line with `bindsym $mod+v`
+3. Change it to a different binding or comment it out
+
+**Then add:**
+```
+bindsym $mod+v exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
+```
+
+4. Reload Sway: Press $mod+Shift+c"#,
+                            path.display(),
+                            path.display()
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    conflicts
+}
+
+fn get_sway_config_paths() -> Vec<PathBuf> {
+    let home = env::var("HOME").unwrap_or_default();
+    vec![
+        PathBuf::from(&home).join(".config/sway/config"),
+        PathBuf::from(&home).join(".sway/config"),
+        PathBuf::from("/etc/sway/config"),
+    ]
+}
+
+// Hyprland Conflicts
+fn detect_hyprland_conflicts() -> Vec<ShortcutConflict> {
+    let mut conflicts = Vec::new();
+    let config_paths = get_hyprland_config_paths();
+
+    for path in config_paths {
+        if let Ok(content) = fs::read_to_string(&path) {
+            for line in content.lines() {
+                let line_lower = line.to_lowercase().trim().to_string();
+
+                if line_lower.starts_with('#') {
+                    continue;
+                }
+
+                if line_lower.starts_with("bind")
+                    && line_lower.contains("super")
+                    && (line_lower.contains(", v,") || line_lower.contains(",v,"))
+                    && !line_lower.contains("clipboard-history")
+                    && !line_lower.contains("win11")
+                {
+                    let parts: Vec<&str> = line.split(',').collect();
+                    let action = if parts.len() >= 4 {
+                        parts[3..].join(",").trim().to_string()
+                    } else {
+                        "Unknown action".to_string()
+                    };
+
+                    conflicts.push(ShortcutConflict {
+                        binding: "SUPER, V".to_string(),
+                        current_action: action,
+                        owner: "Hyprland config".to_string(),
+                        resolution_command: None,
+                        resolution_steps: format!(
+                            r#"**Hyprland Config Conflict:**
+Found in: {}
+
+**To resolve:**
+1. Edit your Hyprland config: `{}`
+2. Find the line with `bind = SUPER, V, ...`
+3. Change it to a different binding or comment it out
+
+**Then add:**
+```
+bind = SUPER, V, exec, spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
+```
+
+4. The config auto-reloads, or reload manually"#,
+                            path.display(),
+                            path.display()
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    conflicts
+}
+
+fn get_hyprland_config_paths() -> Vec<PathBuf> {
+    let home = env::var("HOME").unwrap_or_default();
+    let xdg_config = env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{}/.config", home));
+
+    vec![
+        PathBuf::from(&xdg_config).join("hypr/hyprland.conf"),
+        PathBuf::from(&home).join(".config/hypr/hyprland.conf"),
+    ]
+}
+
+// Cinnamon Conflicts
+fn detect_cinnamon_conflicts() -> Vec<ShortcutConflict> {
+    let mut conflicts = Vec::new();
+
+    if let Some(binding) = gsettings_get("org.cinnamon.desktop.keybindings", "show-desklets") {
+        let binding_lower = binding.to_lowercase();
+        if binding_lower.contains("super") && binding_lower.contains("v") {
+            conflicts.push(ShortcutConflict {
+                binding: "<Super>v".to_string(),
+                current_action: "Show Desklets".to_string(),
+                owner: "Cinnamon".to_string(),
+                resolution_command: Some(
+                    "gsettings set org.cinnamon.desktop.keybindings show-desklets \"['<Super><Shift>v']\"".to_string()
+                ),
+                resolution_steps: r#"**To resolve manually:**
+1. Open System Settings → Keyboard → Shortcuts
+2. Find "Show Desklets"
+3. Change Super+V to Super+Shift+V"#.to_string(),
+            });
+        }
+    }
+
+    conflicts
+}
+
+// XFCE Conflicts
+fn detect_xfce_conflicts() -> Vec<ShortcutConflict> {
+    let mut conflicts = Vec::new();
+
+    if !Utils::command_exists("xfconf-query") {
+        return conflicts;
+    }
+
+    let output = Command::new("xfconf-query")
+        .args(["-c", "xfce4-keyboard-shortcuts", "-l", "-v"])
+        .output();
+
+    if let Ok(output) = output {
+        let content = String::from_utf8_lossy(&output.stdout);
+        for line in content.lines() {
+            let line_lower = line.to_lowercase();
+            if line_lower.contains("<super>v")
+                && !line_lower.contains("clipboard-history")
+                && !line_lower.contains("win11")
+            {
+                conflicts.push(ShortcutConflict {
+                    binding: "<Super>v".to_string(),
+                    current_action: line.to_string(),
+                    owner: "XFCE".to_string(),
+                    resolution_command: None,
+                    resolution_steps: r#"**To resolve manually:**
+1. Open Settings → Keyboard → Application Shortcuts
+2. Find the Super+V binding
+3. Change or remove it"#
+                        .to_string(),
+                });
+            }
+        }
+    }
+
+    conflicts
+}
+
+// =============================================================================
+// Manual Instructions & Setup Status
+// =============================================================================
+
+#[derive(serde::Serialize)]
+pub struct ShortcutToolsStatus {
+    pub desktop_environment: String,
+    pub gsettings_available: bool,
+    pub kde_tools_available: bool,
+    pub xfce_tools_available: bool,
+    pub can_register_automatically: bool,
+    pub manual_instructions: String,
+    pub has_conflicts: bool,
+    pub conflict_count: usize,
+    pub can_auto_resolve_conflicts: bool,
+}
+
+pub fn get_manual_instructions(de: &str) -> String {
+    match de {
+        "GNOME" => r#"**GNOME Settings:**
+1. Open Settings → Keyboard → Keyboard Shortcuts → Custom Shortcuts
+2. Click "+" to add a new shortcut
+3. Name: "Clipboard History"
+4. Command: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+5. Shortcut: Press Super+V
+
+**⚠️ Note:** GNOME uses Super+V for the Notification Center by default.
+To free up Super+V, run:
+```
+gsettings set org.gnome.shell.keybindings toggle-message-tray "['<Super><Shift>v']"
+```"#
+            .to_string(),
+
+        "Pop!_OS" => r#"**Pop!_OS / Pop Shell:**
+1. Open Settings → Keyboard → Keyboard Shortcuts → Custom Shortcuts
+2. Add a new shortcut with command: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+3. Set the shortcut to Super+V
+
+**⚠️ Note:** Pop!_OS inherits GNOME's Super+V for Notification Center.
+To free up Super+V, run:
+```
+gsettings set org.gnome.shell.keybindings toggle-message-tray "['<Super><Shift>v']"
+```
+
+If Pop Shell uses Super+V for tiling, change it in:
+Settings → Keyboard → Customize Shortcuts → Pop Shell"#
+            .to_string(),
+
+        "KDE Plasma" => r#"**KDE System Settings:**
+1. Open System Settings → Shortcuts → Custom Shortcuts
+2. Click "Edit" → "New" → "Global Shortcut" → "Command/URL"
+3. Name: "Clipboard History"
+4. Trigger: Click and press Meta+V
+5. Action: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+
+**⚠️ Note:** If Klipper (KDE's clipboard) uses Meta+V:
+1. Right-click Klipper in system tray → Configure
+2. Change or disable its shortcut"#
+            .to_string(),
+
+        "Cinnamon" => r#"**Cinnamon Settings:**
+1. Open System Settings → Keyboard → Shortcuts → Custom Shortcuts
+2. Click "Add custom shortcut"
+3. Name: "Clipboard History"
+4. Command: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+5. Click on the shortcut area and press Super+V"#
+            .to_string(),
+
+        "XFCE" => r#"**XFCE Settings:**
+1. Open Settings → Keyboard → Application Shortcuts
+2. Click "Add"
+3. Command: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+4. Press Super+V when prompted"#
+            .to_string(),
+
+        "MATE" => r#"**MATE Control Center:**
+1. Open Control Center → Keyboard Shortcuts
+2. Click "Add"
+3. Name: "Clipboard History"
+4. Command: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+5. Click on the shortcut and press Super+V"#
+            .to_string(),
+
+        "LXQt" => r#"**LXQt Configuration:**
+1. Open LXQt Configuration → Shortcut Keys
+2. Click "Add"
+3. Description: "Clipboard History"
+4. Command: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+5. Set shortcut to Meta+V"#
+            .to_string(),
+
+        "LXDE" => r#"**LXDE/Openbox:**
+1. Edit ~/.config/openbox/lxde-rc.xml
+2. Add in <keyboard> section:
+
+<keybind key="Super_L+v">
+  <action name="Execute">
+    <command>spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard</command>
+  </action>
+</keybind>
+
+3. Run: openbox --reconfigure"#
+            .to_string(),
+
+        "COSMIC" => r#"**COSMIC Settings:**
+1. Open Settings → Keyboard → Custom Shortcuts
+2. Add new shortcut
+3. Command: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+4. Binding: Super+V
+
+**Note:** If there's a conflict, check System shortcuts for Super+V bindings."#
+            .to_string(),
+
+        "i3" => r#"**i3 Configuration:**
+1. Edit your i3 config: `~/.config/i3/config`
+2. Comment out or remove any existing `bindsym $mod+v` line
+3. Add this line:
+```
+bindsym $mod+v exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
+```
+4. Reload i3: Press $mod+Shift+r
+
+**Alternative shortcut:**
+```
+bindsym Ctrl+Mod1+v exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
+```"#
+            .to_string(),
+
+        "Sway" => r#"**Sway Configuration:**
+1. Edit your Sway config: `~/.config/sway/config`
+2. Comment out or remove any existing `bindsym $mod+v` line
+3. Add this line:
+```
+bindsym $mod+v exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
+```
+4. Reload Sway: Press $mod+Shift+c
+
+**Alternative shortcut:**
+```
+bindsym Ctrl+Mod1+v exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
+```"#
+            .to_string(),
+
+        "Hyprland" => r#"**Hyprland Configuration:**
+1. Edit your Hyprland config: `~/.config/hypr/hyprland.conf`
+2. Comment out or remove any existing `bind = SUPER, V, ...` line
+3. Add this line:
+```
+bind = SUPER, V, exec, spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
+```
+4. Config auto-reloads (or press Super+M to reload manually)
+
+**Alternative shortcut:**
+```
+bind = CTRL ALT, V, exec, spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
+```"#
+            .to_string(),
+
+        _ => r#"**Generic Instructions:**
+1. Open your desktop environment's keyboard shortcuts settings
+2. Add a new custom shortcut
+3. Command: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+4. Shortcut: Super+V (or your preferred combination)
+
+**Alternative:** Use Ctrl+Alt+V if Super+V conflicts with your DE."#
+            .to_string(),
+    }
+}
+
+// =============================================================================
+// Tauri Commands (Frontend IPC Interface)
+// =============================================================================
+
+/// Get the current desktop environment name
+#[tauri::command]
+pub fn get_desktop_environment() -> String {
+    let xdg_current = env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .to_lowercase();
+    let xdg_session = env::var("XDG_SESSION_DESKTOP")
+        .unwrap_or_default()
+        .to_lowercase();
+    let combined = format!("{} {}", xdg_current, xdg_session);
+
+    if combined.contains("pop") {
+        return "Pop!_OS".to_string();
+    }
+    if combined.contains("gnome") || combined.contains("unity") || combined.contains("pantheon") {
+        "GNOME".to_string()
+    } else if combined.contains("cinnamon") {
+        "Cinnamon".to_string()
+    } else if combined.contains("kde") || combined.contains("plasma") {
+        "KDE Plasma".to_string()
+    } else if combined.contains("xfce") {
+        "XFCE".to_string()
+    } else if combined.contains("mate") {
+        "MATE".to_string()
+    } else if combined.contains("lxde") {
+        "LXDE".to_string()
+    } else if combined.contains("lxqt") {
+        "LXQt".to_string()
+    } else if combined.contains("cosmic") {
+        "COSMIC".to_string()
+    } else if combined.contains("budgie") {
+        "Budgie".to_string()
+    } else if combined.contains("deepin") {
+        "Deepin".to_string()
+    } else if combined.contains("i3") {
+        "i3".to_string()
+    } else if combined.contains("sway") {
+        "Sway".to_string()
+    } else if combined.contains("hyprland") {
+        "Hyprland".to_string()
+    } else if is_process_running("i3") {
+        "i3".to_string()
+    } else if is_process_running("sway") {
+        "Sway".to_string()
+    } else if is_process_running("hyprland") || is_process_running("Hyprland") {
+        "Hyprland".to_string()
+    } else {
+        xdg_current.to_uppercase()
+    }
+}
+
+/// Detect shortcut conflicts for Super+V
+#[tauri::command]
+pub fn detect_conflicts() -> ConflictDetectionResult {
+    detect_shortcut_conflicts()
+}
+
+/// Automatically resolve detected conflicts
+#[tauri::command]
+pub fn resolve_conflicts() -> std::result::Result<Vec<String>, String> {
+    auto_resolve_conflicts()
+}
+
+/// Register the global shortcuts with the desktop environment
+/// Invoked by the onboarding Setup Wizard ("Register Automatically") and Settings app
+#[tauri::command]
+pub fn register_de_shortcut() -> std::result::Result<String, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        register_global_shortcut();
+        let _ = tx.send(());
+    });
+
+    match rx.recv() {
+        Ok(()) => {
+            Ok("Shortcut registration completed. Check the app logs for details.".to_string())
+        }
+        Err(_) => Err("Shortcut registration thread failed unexpectedly.".to_string()),
+    }
+}
+
+/// Check if the DE shortcut manager has the tools needed
+#[tauri::command]
+pub fn check_shortcut_tools() -> ShortcutToolsStatus {
+    let gsettings = Utils::command_exists("gsettings");
+    let kwriteconfig5 = Utils::command_exists("kwriteconfig5");
+    let kwriteconfig6 = Utils::command_exists("kwriteconfig6");
+    let xfconf_query = Utils::command_exists("xfconf-query");
+    let dconf = Utils::command_exists("dconf");
+
+    let de = get_desktop_environment();
+
+    let can_register = match de.as_str() {
+        "GNOME" | "Pop!_OS" | "Cinnamon" | "MATE" | "Budgie" | "Deepin" => gsettings || dconf,
+        "KDE Plasma" => kwriteconfig5 || kwriteconfig6,
+        "XFCE" => xfconf_query,
+        "LXQt" => true,
+        "LXDE" => true,
+        "COSMIC" => true,
+        "i3" => true,
+        "Sway" => true,
+        "Hyprland" => true,
+        _ => gsettings,
+    };
+
+    let conflicts = detect_shortcut_conflicts();
+
+    ShortcutToolsStatus {
+        desktop_environment: de.clone(),
+        gsettings_available: gsettings,
+        kde_tools_available: kwriteconfig5 || kwriteconfig6,
+        xfce_tools_available: xfconf_query,
+        can_register_automatically: can_register,
+        manual_instructions: get_manual_instructions(&de),
+        has_conflicts: !conflicts.conflicts.is_empty(),
+        conflict_count: conflicts.conflicts.len(),
+        can_auto_resolve_conflicts: conflicts.can_auto_resolve,
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_escape_xml() {
+        assert_eq!(escape_xml("test"), "test");
+        assert_eq!(escape_xml("a & b"), "a &amp; b");
+        assert_eq!(escape_xml("<tag>"), "&lt;tag&gt;");
+        assert_eq!(escape_xml("\"quotes'"), "&quot;quotes&apos;");
+    }
+
+    #[test]
+    fn test_cosmic_escape_ron_string() {
+        assert_eq!(CosmicHandler::escape_ron_string("normal"), "normal");
+        assert_eq!(
+            CosmicHandler::escape_ron_string("with \"quotes\""),
+            "with \\\"quotes\\\""
+        );
+        assert_eq!(
+            CosmicHandler::escape_ron_string("with \\backslashes\\"),
+            "with \\\\backslashes\\\\"
+        );
+    }
+
+    #[test]
+    fn test_cosmic_format_modifiers() {
+        let single = CosmicHandler::format_modifiers("Super");
+        assert!(single.contains("Super,"));
+
+        let multi = CosmicHandler::format_modifiers("Ctrl, Alt");
+        assert!(multi.contains("Ctrl,"));
+        assert!(multi.contains("Alt,"));
+    }
+
+    #[test]
+    fn test_cosmic_build_entry() {
+        let shortcut = ShortcutConfig {
+            id: "test",
+            name: "Test App",
+            command: "test-cmd",
+            args: "",
+            gnome_binding: "<Super>t",
+            kde_binding: "Meta+T",
+            xfce_binding: "<Super>t",
+            cosmic_mods: "Super",
+            cosmic_key: "t",
+            i3_binding: "$mod+t",
+            sway_binding: "$mod+t",
+            hyprland_binding: "SUPER, T",
+            lxde_binding: "W-t",
+        };
+
+        let entry = CosmicHandler::build_entry(&shortcut);
+        assert!(entry.contains("modifiers: ["));
+        assert!(entry.contains("Super,"));
+        assert!(entry.contains("key: \"t\""));
+        assert!(entry.contains("description: Some(\"Test App\")"));
+        assert!(entry.contains("Spawn(\"test-cmd\")"));
+    }
+
+    #[test]
+    fn test_has_mod_v_binding() {
+        assert!(has_mod_v_binding("bindsym $mod+v exec something"));
+        assert!(has_mod_v_binding("bindsym $mod+v"));
+        assert!(has_mod_v_binding("bindsym $mod+v\t"));
+        assert!(has_mod_v_binding("bindsym $mod+v# comment"));
+        assert!(has_mod_v_binding("bindsym $mod+v; something"));
+        assert!(has_mod_v_binding("bindsym mod4+v exec something"));
+
+        assert!(!has_mod_v_binding("bindsym $mod+v_other exec something"));
+        assert!(!has_mod_v_binding("bindsym $mod+volume_up exec something"));
+        assert!(!has_mod_v_binding("bindsym $mod+v1 exec something"));
+        assert!(!has_mod_v_binding("bindsym $mod+a exec something"));
+    }
+
+    #[test]
+    fn test_detect_conflicts_runs() {
+        let _result = detect_shortcut_conflicts();
     }
 }
