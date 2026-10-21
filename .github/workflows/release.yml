@@ -168,11 +168,9 @@ jobs:
             </details>
 
             <details>
-            <summary>Arch Linux (AUR)</summary>
+            <summary>Arch Linux</summary>
 
-            ```bash
-            yay -S win11-clipboard-history-bin
-            ```
+            The installer does not support Arch yet. The AUR package `win11-clipboard-history-bin` is the upstream project's, not this project's, and does not contain this project's fixes, so it is not recommended here. Use the AppImage below (some features are disabled) or build from source (see the [README](https://github.com/harshp2008/Win11Clip#readme)).
             </details>
 
             <details>
