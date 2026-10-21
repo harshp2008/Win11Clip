@@ -15,6 +15,10 @@ DESTDIR ?=
 # `make install` also installs the bundled spawn-at into BINDIR. scripts/install.sh passes
 # INSTALL_SPAWN_AT=no because it manages the copy in ~/.local/bin itself.
 INSTALL_SPAWN_AT ?= yes
+# Stops the running app by exact executable name. `pkill -x $(APP_NAME)-bin` matches nothing: the kernel
+# keeps 15 characters of a process name and procps refuses longer patterns. So take the processes named
+# "win11-clipboard" (the first 15 characters) and compare the executable's real name. Usage: $(KILL_APP) [-9]
+KILL_APP = $(SHELL) -c 'for p in $$(pgrep -x win11-clipboard 2>/dev/null); do n=$$(readlink /proc/$$p/exe 2>/dev/null) || continue; n=$${n% (deleted)}; case "$${n\#\#*/}" in $(APP_NAME)-bin|$(APP_NAME).AppImage) kill $$1 $$p 2>/dev/null;; esac; done; true' kill_app
 
 # Detect distro
 DISTRO := $(shell \
@@ -262,7 +266,7 @@ install: install-extension enable-extension
 		exit 1; \
 	fi
 	@# Stop any running instances safely
-	@killall -9 $(APP_NAME)-bin 2>/dev/null || pkill -9 -x $(APP_NAME)-bin 2>/dev/null || true
+	@killall -9 $(APP_NAME)-bin 2>/dev/null || $(KILL_APP) -9
 	@# Install binary to lib directory
 	@mkdir -p $(DESTDIR)$(LIBDIR)/$(APP_NAME)
 	install -Dm755 src-tauri/target/release/$(APP_NAME)-bin $(DESTDIR)$(LIBDIR)/$(APP_NAME)/$(APP_NAME)-bin
@@ -341,10 +345,7 @@ install: install-extension enable-extension
 uninstall:
 	@echo -e "$(CYAN)Uninstalling $(APP_NAME)...$(RESET)"
 	@# Stop any running instances first
-	@if [ -n "$$SUDO_USER" ]; then \
-		pkill -u $$SUDO_USER -x "$(APP_NAME)-bin" 2>/dev/null || true; \
-	fi
-	@pkill -x "$(APP_NAME)-bin" 2>/dev/null || true
+	@$(KILL_APP)
 	@# Remove from specified PREFIX path
 	rm -f $(DESTDIR)$(BINDIR)/$(APP_NAME)
 	rm -f $(DESTDIR)$(BINDIR)/spawn-at

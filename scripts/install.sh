@@ -271,6 +271,30 @@ ensure_rust() {
 }
 
 # Cleanup previous AppImage installation (prevents conflicts with package manager installs)
+# Prints the pids of running processes whose executable is exactly one of the names given. `pkill -x`
+# cannot do this for our names: the kernel keeps 15 characters of a process name and procps refuses
+# longer patterns, so it matches nothing. So take the processes named "win11-clipboard" (the first
+# 15 characters) and compare the executable's real name.
+app_pids() {
+    local pid exe name want
+    for pid in $(pgrep -x win11-clipboard 2>/dev/null || true); do
+        exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || continue
+        exe="${exe% (deleted)}"; name="${exe##*/}"
+        for want in "$@"; do
+            [ "$name" = "$want" ] && echo "$pid"
+        done
+    done
+    return 0
+}
+
+# Stops (SIGTERM) the processes app_pids finds for the names given.
+stop_app_by_name() {
+    local pids
+    pids=$(app_pids "$@")
+    # shellcheck disable=SC2086  # one pid per word
+    [ -z "$pids" ] || kill $pids 2>/dev/null || true
+}
+
 cleanup_appimage_installation() {
     local has_appimage=false
     
@@ -285,7 +309,7 @@ cleanup_appimage_installation() {
         log "Detected previous AppImage installation. Cleaning up..."
         
         # Kill any running AppImage instances
-        killall -q win11-clipboard-history.AppImage 2>/dev/null || pkill -x win11-clipboard-history.AppImage 2>/dev/null || true
+        killall -q win11-clipboard-history.AppImage 2>/dev/null || stop_app_by_name win11-clipboard-history.AppImage
 
         # Wait for processes to terminate, with a timeout
         timeout=5
@@ -897,8 +921,8 @@ launch_app() {
     log "Starting application..."
     
     # Kill any existing instances (matches both wrapper and -bin binary)
-    killall -q win11-clipboard-history-bin 2>/dev/null || pkill -x win11-clipboard-history-bin 2>/dev/null || true
-    killall -q win11-clipboard-history.AppImage 2>/dev/null || pkill -x win11-clipboard-history.AppImage 2>/dev/null || true
+    killall -q win11-clipboard-history-bin 2>/dev/null || stop_app_by_name win11-clipboard-history-bin
+    killall -q win11-clipboard-history.AppImage 2>/dev/null || stop_app_by_name win11-clipboard-history.AppImage
     sleep 1
     
     # Launch detached from terminal
