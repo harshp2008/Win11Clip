@@ -865,7 +865,25 @@ print_plan() {
         echo "  Will ask    : before removing the installed apt package win11-clipboard-history $(dpkg-query -W -f='${Version}' win11-clipboard-history) (default No, backed up first)"
     fi
     echo "  Extensions  : win11-clipboard-bridge, window-calls (patched) -> ~/.local/share/gnome-shell/extensions"
-    echo "  spawn-at    : $(command -v spawn-at >/dev/null 2>&1 && echo 'already installed, will be refreshed' || echo 'will be installed')"
+    local sa_bundled sa_v sa_src_v sa_t sa_iv
+    sa_bundled=$(bundled_spawn_at)
+    sa_v=""
+    if [ -n "$sa_bundled" ]; then sa_v=$(spawn_at_version "$sa_bundled"); fi
+    sa_src_v="$sa_v"
+    for sa_t in "$SPAWN_AT_SYSTEM_BIN" "$SPAWN_AT_USER_BIN"; do
+        sa_iv=$(spawn_at_version "$sa_t")
+        if [ -n "$sa_iv" ] && { [ -z "$sa_src_v" ] || semver_lt "$sa_src_v" "$sa_iv"; }; then sa_src_v="$sa_iv"; fi
+    done
+    if [ -n "$sa_v" ]; then
+        echo "  spawn-at    : bundled $sa_v (needs $SPAWN_AT_MIN_VERSION or newer); a newer installed copy is kept, older ones are replaced"
+    else
+        echo "  spawn-at    : no bundled copy here; $SPAWN_AT_MIN_VERSION or newer is downloaded from github.com/harshp2008/spawn-at unless one is already installed"
+        sa_src_v="${sa_src_v:-$SPAWN_AT_MIN_VERSION}"
+    fi
+    for sa_t in "$SPAWN_AT_SYSTEM_BIN" "$SPAWN_AT_USER_BIN"; do
+        echo "                $(spawn_at_copy_plan "$sa_t" "$sa_src_v")"
+    done
+    echo "                its GNOME extension is deployed by that same CLI, so the two never differ"
     echo "  Shortcuts   : Super+V, Ctrl+Alt+V, Super+. via GNOME custom keybindings"
     if [[ "${XDG_SESSION_TYPE:-}" == "wayland" ]]; then
         echo "  Note        : on Wayland, newly installed or updated GNOME extensions only load after you log out and back in."
@@ -896,61 +914,155 @@ launch_app() {
     return 0
 }
 
+# Oldest spawn-at with the stale-arm fix: extension protocol 7 plus a CLI that withdraws its own
+# unclaimed arm. bundled-deps/VERSIONS must list at least this version.
+SPAWN_AT_MIN_VERSION="0.2.3"
+SPAWN_AT_SYSTEM_BIN="/usr/local/bin/spawn-at"
+SPAWN_AT_USER_BIN="$HOME/.local/bin/spawn-at"
+SPAWN_AT_EXT_DIR="$HOME/.local/share/gnome-shell/extensions/spawn-at@harsh.local"
+
+# Prints the release version an executable reports ("spawn-at 0.2.3" -> 0.2.3), or nothing when it
+# is missing, can't run, or is not a release build (a dev build prints "DEV BUILD").
+spawn_at_version() {
+    local exe="$1" first=""
+    [ -x "$exe" ] || return 0
+    first=$("$exe" -V 2>/dev/null | head -n 1) || true
+    if [[ "$first" =~ ^spawn-at[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?)$ ]]; then
+        echo "${BASH_REMATCH[1]}"
+    fi
+}
+
+# semver_lt A B -> success when A is older than B. major.minor.patch are compared as numbers
+# (sort -V, so 0.2.10 > 0.2.3); with equal numbers a pre-release (0.2.3-beta.1) is older than the release.
+semver_lt() {
+    local a="$1" b="$2" ac="${1%%-*}" bc="${2%%-*}"
+    if [ "$ac" != "$bc" ]; then
+        [ "$(printf '%s\n%s\n' "$ac" "$bc" | sort -V | head -n 1)" = "$ac" ]
+        return
+    fi
+    [ "$a" = "$b" ] && return 1
+    if [ "$a" != "$ac" ] && [ "$b" = "$bc" ]; then return 0; fi
+    if [ "$a" = "$ac" ] && [ "$b" != "$bc" ]; then return 1; fi
+    [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n 1)" = "$a" ]
+}
+
+# Path of the spawn-at CLI shipped in this checkout (empty when running without one, e.g. curl | bash).
+bundled_spawn_at() {
+    local p
+    for p in bundled-deps/bin/spawn-at ../bundled-deps/bin/spawn-at; do
+        [ -f "$p" ] && { echo "$p"; return 0; }
+    done
+    return 0
+}
+
+# Succeeds when the bundled CLI matches the sha256 recorded for it in bundled-deps/VERSIONS.
+bundled_spawn_at_checksum_ok() {
+    local bin="$1" manifest want got
+    manifest="$(dirname "$(dirname "$bin")")/VERSIONS"
+    [ -f "$manifest" ] || return 1
+    want=$(awk '$1=="spawn-at"{print $3}' "$manifest")
+    got=$(sha256sum "$bin" | awk '{print $1}')
+    [ -n "$want" ] && [ "$want" = "$got" ]
+}
+
+# One line saying what will happen to the spawn-at copy at $1 given the version we will install.
+spawn_at_copy_plan() {
+    local path="$1" want="$2" have
+    if [ ! -e "$path" ]; then echo "$path: not installed -> install $want"; return; fi
+    have=$(spawn_at_version "$path")
+    if [ -z "$have" ]; then echo "$path: no release version (dev build?) -> replace with $want, old file saved"
+    elif semver_lt "$have" "$want"; then echo "$path: $have -> replace with $want"
+    else echo "$path: $have -> keep (not older than $want)"; fi
+}
+
+# Fingerprint of the deployed spawn-at extension files, to tell whether `spawn-at install` changed them.
+spawn_at_ext_fingerprint() {
+    [ -d "$SPAWN_AT_EXT_DIR" ] || { echo "absent"; return; }
+    (cd "$SPAWN_AT_EXT_DIR" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
+}
+
 install_spawn_at() {
-    log "Installing spawn-at utility..."
-    local installed_bin=""
-    local spawn_ext_dir="$HOME/.local/share/gnome-shell/extensions/spawn-at@harsh.local"
-    local spawn_ext_existed=false
-    [ -f "$spawn_ext_dir/metadata.json" ] && spawn_ext_existed=true
+    log "Installing spawn-at utility (minimum version $SPAWN_AT_MIN_VERSION)..."
+    local bundled bundled_v="" src="" src_v="" t v
+    local targets=("$SPAWN_AT_SYSTEM_BIN" "$SPAWN_AT_USER_BIN")
 
-    if [ -f "bundled-deps/bin/spawn-at" ]; then
-        if sudo install -Dm755 bundled-deps/bin/spawn-at /usr/local/bin/spawn-at 2>/dev/null; then
-            installed_bin="/usr/local/bin/spawn-at"
-        fi
-        mkdir -p "$HOME/.local/bin"
-        install -Dm755 bundled-deps/bin/spawn-at "$HOME/.local/bin/spawn-at" 2>/dev/null || cp -f bundled-deps/bin/spawn-at "$HOME/.local/bin/spawn-at"
-        chmod 755 "$HOME/.local/bin/spawn-at" 2>/dev/null || true
-        [ -z "$installed_bin" ] && installed_bin="$HOME/.local/bin/spawn-at"
-    elif [ -f "../bundled-deps/bin/spawn-at" ]; then
-        if sudo install -Dm755 ../bundled-deps/bin/spawn-at /usr/local/bin/spawn-at 2>/dev/null; then
-            installed_bin="/usr/local/bin/spawn-at"
-        fi
-        mkdir -p "$HOME/.local/bin"
-        install -Dm755 ../bundled-deps/bin/spawn-at "$HOME/.local/bin/spawn-at" 2>/dev/null || cp -f ../bundled-deps/bin/spawn-at "$HOME/.local/bin/spawn-at"
-        chmod 755 "$HOME/.local/bin/spawn-at" 2>/dev/null || true
-        [ -z "$installed_bin" ] && installed_bin="$HOME/.local/bin/spawn-at"
-    else
-        log "Downloading latest spawn-at release from official repository..."
-        if curl -fsSL https://raw.githubusercontent.com/harshp2008/spawn-at/main/install.sh | bash -s -- --headless --yes --no-action; then
-            installed_bin="$(command -v spawn-at || echo "$HOME/.local/bin/spawn-at")"
-        else
-            error "Failed to install spawn-at from official installer"
+    bundled=$(bundled_spawn_at)
+    if [ -n "$bundled" ]; then
+        bundled_spawn_at_checksum_ok "$bundled" || error "bundled-deps/bin/spawn-at does not match the sha256 in bundled-deps/VERSIONS. Re-download the source and try again."
+        bundled_v=$(spawn_at_version "$bundled")
+        if [ -z "$bundled_v" ]; then
+            warn "The bundled spawn-at can't run on this machine ($(uname -m)); using the official release instead."
+            bundled=""
+        elif semver_lt "$bundled_v" "$SPAWN_AT_MIN_VERSION"; then
+            error "The bundled spawn-at is $bundled_v, older than the required $SPAWN_AT_MIN_VERSION."
         fi
     fi
 
-    # Also install to ~/.local/bin/spawn-at for unprivileged user updates if needed
-    if [ -n "$installed_bin" ] && [ -f "$installed_bin" ]; then
-        mkdir -p "$HOME/.local/bin"
-        cp -f "$installed_bin" "$HOME/.local/bin/spawn-at" 2>/dev/null || true
-        chmod 755 "$HOME/.local/bin/spawn-at" 2>/dev/null || true
-    fi
+    # The copy every location is brought up to: the newest of the bundled CLI and what is already installed.
+    # Nothing is ever downgraded.
+    if [ -n "$bundled" ]; then src="$bundled"; src_v="$bundled_v"; fi
+    for t in "${targets[@]}"; do
+        v=$(spawn_at_version "$t")
+        if [ -n "$v" ] && { [ -z "$src_v" ] || semver_lt "$src_v" "$v"; }; then src="$t"; src_v="$v"; fi
+    done
 
-    sudo chmod 755 /usr/local/bin/spawn-at 2>/dev/null || true
-
-    # Run spawn-at install to deploy and enable embedded GNOME Shell extension
-    if command -v spawn-at &>/dev/null || [ -x "$HOME/.local/bin/spawn-at" ] || [ -x "/usr/local/bin/spawn-at" ]; then
-        local spawn_at_exe
-        spawn_at_exe="$(command -v spawn-at || echo "$HOME/.local/bin/spawn-at")"
-        [ ! -x "$spawn_at_exe" ] && spawn_at_exe="/usr/local/bin/spawn-at"
-        if [ -x "$spawn_at_exe" ]; then
-            log "Configuring spawn-at extension and runtime..."
-            "$spawn_at_exe" install --headless --yes --no-action 2>/dev/null || true
+    if [ -z "$src" ] || semver_lt "$src_v" "$SPAWN_AT_MIN_VERSION"; then
+        log "Downloading the latest spawn-at release from its official repository..."
+        curl -fsSL https://raw.githubusercontent.com/harshp2008/spawn-at/main/install.sh | bash -s -- --headless --yes --no-action \
+            || error "Failed to install spawn-at from the official installer"
+        for t in "${targets[@]}"; do
+            v=$(spawn_at_version "$t")
+            if [ -n "$v" ] && { [ -z "$src_v" ] || semver_lt "$src_v" "$v"; }; then src="$t"; src_v="$v"; fi
+        done
+        if [ -z "$src" ] || semver_lt "$src_v" "$SPAWN_AT_MIN_VERSION"; then
+            warn "spawn-at ${src_v:-unknown} is installed, but $SPAWN_AT_MIN_VERSION or newer is required (older ones can misplace the popup)."
         fi
     fi
 
-    if [ "$spawn_ext_existed" = false ] && [ -f "$spawn_ext_dir/metadata.json" ]; then
-        EXTENSIONS_MODIFIED=1
-        RESTART_NEEDED=1
+    # Work from a private copy: $src may be one of the targets, and replacing it must not change what we copy.
+    local work
+    work="$(mktemp -d)"; CLEANUP_PATHS+=("$work")
+    if [ -n "$src" ]; then
+        cp -f "$src" "$work/spawn-at"; chmod 755 "$work/spawn-at"
+        for t in "${targets[@]}"; do
+            v=$(spawn_at_version "$t")
+            if [ -e "$t" ] && [ -n "$v" ] && ! semver_lt "$v" "$src_v"; then
+                log "Keeping $t ($v, not older than $src_v)"
+                continue
+            fi
+            if [ -e "$t" ] && [ -z "$v" ]; then
+                mkdir -p "$BACKUP_DIR"
+                cp -f "$t" "$BACKUP_DIR/spawn-at$(echo "$t" | tr / _).$(date +%Y%m%d-%H%M%S)" 2>/dev/null \
+                    && log "$t has no release version (a dev build?); saved a copy in $BACKUP_DIR"
+            fi
+            if [ "$t" = "$SPAWN_AT_SYSTEM_BIN" ]; then
+                if sudo install -Dm755 "$work/spawn-at" "$t" 2>/dev/null; then log "Installed spawn-at $src_v to $t"
+                else warn "Could not write $t (needs sudo); the copy in ~/.local/bin is used instead."; fi
+            else
+                mkdir -p "$(dirname "$t")"
+                install -Dm755 "$work/spawn-at" "$t" && log "Installed spawn-at $src_v to $t"
+            fi
+        done
+    fi
+
+    # Deploy the extension from the CLI that stays installed (the newest copy, never older than the
+    # bundled one), so the CLI and the extension always come from the same release.
+    local best="" best_v=""
+    for t in "${targets[@]}"; do
+        v=$(spawn_at_version "$t")
+        if [ -n "$v" ] && { [ -z "$best_v" ] || semver_lt "$best_v" "$v"; }; then best="$t"; best_v="$v"; fi
+    done
+    if [ -n "$best" ]; then
+        local before after
+        before=$(spawn_at_ext_fingerprint)
+        log "Deploying the spawn-at $best_v GNOME extension..."
+        "$best" install --headless --yes --no-action --skip-bin 2>/dev/null || warn "spawn-at install reported a problem; run: $best install --skip-bin"
+        after=$(spawn_at_ext_fingerprint)
+        # The Shell only loads extension files at login, so any change needs a log out.
+        if [ "$before" != "$after" ]; then
+            EXTENSIONS_MODIFIED=1
+            RESTART_NEEDED=1
+        fi
     fi
 
     # Configure auto-update on login
@@ -972,7 +1084,7 @@ EOF
         sed -i 's/ update --check --headless/ update --headless/g' "$autostart_dir/spawn-at-update-check.desktop" 2>/dev/null || true
     fi
 
-    success "spawn-at installed and auto-update configured at login"
+    success "spawn-at ${best_v:-?} installed and auto-update configured at login"
 }
 
 install_uninstaller() {
