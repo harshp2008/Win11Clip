@@ -40,7 +40,7 @@ fi
 echo ""
 echo "Select release type:"
 echo "  1) Stable      - Full release for all users (default)"
-echo "                   → GitHub Release + Cloudsmith + AUR"
+echo "                   → GitHub Release (+ AUR if a key is configured)"
 echo "  2) Pre-release - Testing version for early adopters"
 echo "                   → GitHub Release only (won't affect apt upgrade)"
 echo ""
@@ -76,7 +76,6 @@ case "$RELEASE_TYPE" in
         
         warn "Creating PRE-RELEASE v$VERSION"
         warn "→ Will be uploaded to GitHub Releases ONLY"
-        warn "→ Will NOT be pushed to Cloudsmith (no apt upgrade)"
         warn "→ Will NOT update AUR"
         ;;
     *)
@@ -86,7 +85,7 @@ case "$RELEASE_TYPE" in
             error "Stable releases cannot have pre-release suffixes. Use version X.Y.Z"
         fi
         success "Creating STABLE release v$VERSION"
-        log "→ GitHub Release + Cloudsmith + AUR"
+        log "→ GitHub Release (+ AUR if a key is configured)"
         ;;
 esac
 
@@ -195,8 +194,8 @@ if [ "$IS_PRERELEASE" = true ]; then
     echo -e "${YELLOW}║  • Build .deb, .rpm, and .AppImage                            ${NC}"
     echo -e "${YELLOW}║  • Create GitHub Pre-release                                  ${NC}"
     echo -e "${YELLOW}║                                                                ${NC}"
-    echo -e "${YELLOW}║  ⚠️  Cloudsmith and AUR will NOT be updated                    ${NC}"
-    echo -e "${YELLOW}║  ⚠️  Users won't receive this via apt upgrade                  ${NC}"
+    echo -e "${YELLOW}║  ⚠️  The AUR package will NOT be updated                       ${NC}"
+    echo -e "${YELLOW}║  ⚠️  The installer only uses stable releases                  ${NC}"
     echo -e "${YELLOW}╚════════════════════════════════════════════════════════════════╝${NC}"
 else
     echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
@@ -205,9 +204,9 @@ else
     echo -e "${GREEN}║  GitHub Actions will now:                                      ${NC}"
     echo -e "${GREEN}║  • Build .deb, .rpm, and .AppImage                            ${NC}"
     echo -e "${GREEN}║  • Create GitHub Release                                       ${NC}"
-    echo -e "${GREEN}║  • Upload to Cloudsmith (enables apt upgrade)                  ${NC}"
+    echo -e "${GREEN}║  • Make it the latest release that install.sh downloads    ${NC}"
     echo -e "${GREEN}║  • Update AUR package                                          ${NC}"
     echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
 fi
 echo ""
-echo "Track progress: https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux/actions"
+echo "Track progress: https://github.com/harshp2008/Win11Clip/actions"

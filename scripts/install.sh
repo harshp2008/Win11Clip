@@ -26,7 +26,247 @@ error()   { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 # Configuration
 REPO_OWNER="${REPO_OWNER:-harshp2008}"
 REPO_NAME="${REPO_NAME:-Win11Clip}"
-CLOUDSMITH_REPO="gustavosett/clipboard-manager"
+# Pin the installer to this repository's own releases: "latest" unless WIN11CLIP_TAG is set.
+RELEASE_TAG_PIN="${WIN11CLIP_TAG:-}"
+# Oldest release that contains the focus / always-on-top / rounded-corner fixes. Anything
+# older (or no release at all) makes the installer build from source instead.
+MIN_RELEASE_VERSION="0.7.3"
+MIN_NODE_MAJOR=20
+MIN_RUST_VERSION="1.85"
+NVM_VERSION="v0.40.3"
+
+# What this installer added on top of the user's system, so uninstall.sh only removes ours.
+MANIFEST_DIR="$HOME/.config/win11-clipboard-history"
+MANIFEST="$MANIFEST_DIR/installer-manifest"
+# Copies of anything this installer removes with your consent, so uninstall.sh can restore or report it.
+# Not under ~/.config/win11-clipboard-history: uninstall.sh wipes that folder.
+BACKUP_DIR="$HOME/.local/state/win11clip-installer/backup"
+
+# Leftovers of older installers that added gustavosett's upstream package repository.
+LEGACY_APT_LIST="/etc/apt/sources.list.d/gustavosett-clipboard-manager.list"
+LEGACY_APT_KEY="/usr/share/keyrings/gustavosett-clipboard-manager-archive-keyring.gpg"
+LEGACY_RPM_REPOS=(/etc/yum.repos.d/gustavosett-clipboard-manager*.repo /etc/zypp/repos.d/gustavosett-clipboard-manager*.repo)
+
+DRY_RUN=false
+BUILD_FROM_SOURCE=false
+CLEANUP_PATHS=()
+SUDO_KEEPALIVE_PID=""
+
+cleanup() {
+    [ -n "$SUDO_KEEPALIVE_PID" ] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+    local p
+    for p in "${CLEANUP_PATHS[@]}"; do rm -rf "$p"; done
+}
+
+# True when $1 >= $2 (dotted versions).
+version_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
+
+record_install() {
+    mkdir -p "$MANIFEST_DIR"
+    grep -qxF "$1" "$MANIFEST" 2>/dev/null || echo "$1" >> "$MANIFEST"
+}
+
+# ask_yes_no "question" -> 0 only on an explicit yes. Defaults to No, and to No when there is
+# no terminal to ask on (reads /dev/tty so it also works under `curl | bash`).
+ask_yes_no() {
+    local reply=""
+    if ( : < /dev/tty ) 2>/dev/null; then
+        read -r -p "$1 [y/N] " reply < /dev/tty || true
+    fi
+    [[ "$reply" =~ ^[Yy] ]]
+}
+
+# Say why sudo is needed before the first prompt, then keep the credential alive so a
+# long build doesn't trigger a second password prompt.
+SUDO_EXPLAINED=false
+explain_sudo() {
+    [ "$SUDO_EXPLAINED" = true ] && return 0
+    SUDO_EXPLAINED=true
+    echo ""
+    echo -e "${YELLOW}[!]${NC} Administrator rights (sudo) are needed once to install system packages"
+    echo "    with apt and to put the app in /usr. You may be asked for your password."
+    echo ""
+    sudo -v || error "sudo is required to install system packages. Re-run as a user that can use sudo."
+    ( while true; do sudo -n true 2>/dev/null; sleep 50; kill -0 "$$" 2>/dev/null || exit; done ) &
+    SUDO_KEEPALIVE_PID=$!
+}
+
+# Offer to remove the apt/dnf/zypper source older installers added for gustavosett's upstream
+# package. It would otherwise keep offering (and `apt upgrade` installing) upstream's build
+# in place of this project's. Asks first (default No) and saves a copy; uninstall.sh restores it.
+remove_legacy_cloudsmith_source() {
+    local found=()
+    [ -f "$LEGACY_APT_LIST" ] && found+=("$LEGACY_APT_LIST")
+    [ -f "$LEGACY_APT_KEY" ] && found+=("$LEGACY_APT_KEY")
+    local f
+    for f in "${LEGACY_RPM_REPOS[@]}"; do [ -f "$f" ] && found+=("$f"); done
+    [ ${#found[@]} -eq 0 ] && return 0
+
+    echo ""
+    warn "Found the old upstream package source added by a previous installer:"
+    for f in "${found[@]}"; do echo "      $f"; done
+    echo "    It makes your package manager offer gustavosett's upstream build, which lacks this"
+    echo "    project's fixes, and a routine upgrade could replace this app with it."
+    echo "    If you remove it, a copy is saved under $BACKUP_DIR/apt-source"
+    echo "    and uninstall.sh can put it back."
+    if ! ask_yes_no "Remove the old upstream package source?"; then
+        warn "Kept the upstream package source. A routine 'apt upgrade' may swap this app for upstream's build."
+        return 0
+    fi
+
+    mkdir -p "$BACKUP_DIR/apt-source"
+    cp -p --parents "${found[@]}" "$BACKUP_DIR/apt-source/" \
+        || error "Could not save a backup copy to $BACKUP_DIR/apt-source, so nothing was removed."
+    explain_sudo
+    sudo rm -f "${found[@]}" || error "Could not remove ${found[*]}. Remove them by hand with: sudo rm -f ${found[*]}"
+    for f in "${found[@]}"; do record_install "removed-source:$f"; done
+    command -v apt-get >/dev/null 2>&1 && { sudo apt-get update -qq || true; }
+    success "Removed the upstream package source (backup: $BACKUP_DIR/apt-source)."
+}
+
+# --build installs under /usr/local, but the launcher prefers a copy in /usr/bin, so an
+# already-installed apt package (for example upstream's) would keep running instead of the
+# new build. Ask once, before the long build, so a "no" costs nothing. Sets REMOVE_PACKAGE.
+REMOVE_PACKAGE=false
+confirm_packaged_copy_removal() {
+    command -v dpkg >/dev/null 2>&1 && dpkg -s win11-clipboard-history >/dev/null 2>&1 || return 0
+    local ver maint
+    ver=$(dpkg-query -W -f='${Version}' win11-clipboard-history 2>/dev/null)
+    maint=$(dpkg-query -W -f='${Maintainer}' win11-clipboard-history 2>/dev/null)
+
+    echo ""
+    warn "An apt package named win11-clipboard-history is already installed: version $ver (maintainer: $maint)."
+    echo "    A source build installs to /usr/local, but the launcher prefers the copy in /usr/bin,"
+    echo "    so that package would keep running instead of the build you are about to make."
+    echo "    To fix that, after the build succeeds this installer would run:"
+    echo "        sudo apt-get remove win11-clipboard-history"
+    echo "    Your clipboard history and settings (~/.config) are not touched. Before removing it, the"
+    echo "    package's files are saved under $BACKUP_DIR/package and uninstall.sh reports what was removed."
+    if ask_yes_no "Remove the installed package once the new build is ready?"; then
+        REMOVE_PACKAGE=true
+    else
+        error "Cancelled, nothing was changed. Either remove the package yourself (sudo apt remove win11-clipboard-history) and re-run, or re-run and answer y."
+    fi
+}
+
+# Save the installed package's files, record it in the manifest, then remove it.
+remove_packaged_copy() {
+    [ "$REMOVE_PACKAGE" = true ] || return 0
+    dpkg -s win11-clipboard-history >/dev/null 2>&1 || return 0
+    local ver files=() p
+    ver=$(dpkg-query -W -f='${Version}' win11-clipboard-history)
+    while IFS= read -r p; do
+        { [ -f "$p" ] || [ -L "$p" ]; } && files+=("${p#/}")
+    done < <(dpkg -L win11-clipboard-history)
+
+    mkdir -p "$BACKUP_DIR/package"
+    tar -C / -czf "$BACKUP_DIR/package/win11-clipboard-history_${ver}_files.tar.gz" "${files[@]}" \
+        || error "Could not save a backup of the installed package to $BACKUP_DIR/package, so it was not removed."
+    sudo apt-get remove -y win11-clipboard-history \
+        || error "Could not remove the installed win11-clipboard-history package. Run: sudo apt remove win11-clipboard-history   then re-run."
+    record_install "removed-package:win11-clipboard-history=$ver"
+    success "Removed the apt package win11-clipboard-history $ver (files saved in $BACKUP_DIR/package)."
+}
+
+# --- GitHub release lookup (this repository only) --------------------------------------
+RELEASE_DATA=""
+RELEASE_TAG=""
+fetch_release() {
+    local url="https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest"
+    [ -n "$RELEASE_TAG_PIN" ] && url="https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/tags/$RELEASE_TAG_PIN"
+    RELEASE_DATA=$(curl -fsSL "$url" 2>/dev/null) || return 1
+    RELEASE_TAG=$(echo "$RELEASE_DATA" | grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' | tr -cd '[:alnum:]._-')
+    [ -n "$RELEASE_TAG" ]
+}
+
+# Print the download URL of the release asset with extension $1 ("deb", "rpm") for this arch.
+release_asset_url() {
+    local ext="$1" arch="$DEB_ARCH"
+    [ "$ext" = "rpm" ] && arch="$RPM_ARCH"
+    echo "$RELEASE_DATA" | grep "browser_download_url.*\.${ext}\"" | grep -i "${arch}" | head -1 | cut -d '"' -f 4
+}
+
+# Decide whether the default (prebuilt) install can be used. Sets RELEASE_PROBLEM when not.
+RELEASE_PROBLEM=""
+release_is_usable() {
+    local ext="$1"
+    if ! fetch_release; then
+        RELEASE_PROBLEM="could not reach the GitHub releases of $REPO_OWNER/$REPO_NAME (offline, rate-limited, or no release published)"
+        return 1
+    fi
+    if ! version_ge "${RELEASE_TAG#v}" "$MIN_RELEASE_VERSION"; then
+        RELEASE_PROBLEM="the latest release ($RELEASE_TAG) is older than $MIN_RELEASE_VERSION and does not include the focus and rounded-corner fixes"
+        return 1
+    fi
+    if [ -z "$(release_asset_url "$ext")" ]; then
+        RELEASE_PROBLEM="release $RELEASE_TAG has no .$ext asset for this CPU architecture"
+        return 1
+    fi
+    return 0
+}
+
+# --- Build-from-source toolchain (user-local, no sudo) ---------------------------------
+load_nvm() {
+    export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+    if [ -s "$NVM_DIR/nvm.sh" ]; then
+        # nvm.sh is not written for `set -e`
+        set +e; . "$NVM_DIR/nvm.sh"; set -e
+    fi
+}
+
+node_ok() {
+    command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 && \
+        [ "$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)" -ge "$MIN_NODE_MAJOR" ]
+}
+
+ensure_node() {
+    load_nvm
+    if node_ok; then
+        success "Node.js $(node -v) already available."
+        return 0
+    fi
+    if ! command -v nvm >/dev/null 2>&1; then
+        # A stale NVM_DIR (folder deleted, profile still exports it) makes nvm's own installer refuse to run.
+        [ -s "${NVM_DIR:-}/nvm.sh" ] || unset NVM_DIR
+        log "Installing nvm $NVM_VERSION into ~/.nvm (no sudo; your shell profile is left untouched)..."
+        curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh" | PROFILE=/dev/null bash \
+            || error "Could not install nvm. Check your internet connection, or install Node.js $MIN_NODE_MAJOR+ yourself and re-run."
+        record_install "nvm-installed"
+        load_nvm
+    fi
+    command -v nvm >/dev/null 2>&1 || error "nvm was installed but could not be loaded. Open a new terminal and re-run the installer."
+    log "Installing Node.js $MIN_NODE_MAJOR+ with nvm..."
+    set +e; nvm install --lts; local rc=$?; set -e
+    [ "$rc" -eq 0 ] && node_ok || error "Node.js $MIN_NODE_MAJOR+ could not be installed with nvm. Install it manually (https://nodejs.org) and re-run."
+    record_install "node-installed-by-nvm"
+    success "Node.js $(node -v) ready."
+}
+
+rust_ok() {
+    command -v cargo >/dev/null 2>&1 && command -v rustc >/dev/null 2>&1 && \
+        version_ge "$(rustc --version | awk '{print $2}')" "$MIN_RUST_VERSION"
+}
+
+ensure_rust() {
+    [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+    if rust_ok; then
+        success "Rust $(rustc --version | awk '{print $2}') already available."
+        return 0
+    fi
+    if command -v rustup >/dev/null 2>&1; then
+        log "Updating the Rust toolchain with rustup..."
+        rustup toolchain install stable --profile minimal && rustup default stable \
+            || error "rustup could not install a current Rust toolchain. Run 'rustup update stable' and re-run."
+    else
+        log "Installing Rust with rustup into ~/.cargo (no sudo; your shell profile is left untouched)..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path \
+            || error "Could not install Rust. Check your internet connection, or install it from https://rustup.rs and re-run."
+        record_install "rustup-installed"
+    fi
+    [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+    rust_ok || error "A Rust toolchain >= $MIN_RUST_VERSION is required but was not found after installation."
+    success "Rust $(rustc --version | awk '{print $2}') ready."
+}
 
 # Cleanup previous AppImage installation (prevents conflicts with package manager installs)
 cleanup_appimage_installation() {
@@ -135,14 +375,6 @@ check_webkit_compatibility() {
 install_via_package_manager() {
     # Clean up any previous AppImage installation to prevent PATH conflicts
     cleanup_appimage_installation
-    
-    if [ -f "./src-tauri/target/release/win11-clipboard-history-bin" ]; then
-        log "Local compiled binary found. Installing locally..."
-        sudo cp "./src-tauri/target/release/win11-clipboard-history-bin" "/usr/bin/win11-clipboard-history"
-        sudo chmod +x "/usr/bin/win11-clipboard-history"
-        success "Installed local binary to /usr/bin/"
-        return 0
-    fi
 
     # IMPORTANT: Check distro ID/family FIRST before falling back to command detection.
     # This prevents misdetection when tools like pacman are installed on non-Arch systems.
@@ -190,102 +422,40 @@ install_via_package_manager() {
 }
 
 install_deb() {
-    log "Setting up APT repository (Cloudsmith)..."
-    
-    # Install prerequisites for HTTPS repos
-    sudo apt-get update -qq
-    sudo apt-get install -y apt-transport-https curl || true
-    
-    # Try Cloudsmith repository first (enables auto-updates)
-    if curl -1sLf "https://dl.cloudsmith.io/public/${CLOUDSMITH_REPO}/setup.deb.sh" | sudo -E bash 2>/dev/null; then
-        log "Installing win11-clipboard-history from repository..."
-        sudo apt-get update -qq
-        if sudo apt-get install -y win11-clipboard-history; then
-            success "Installed via APT repository! (auto-updates enabled)"
-            return 0
-        fi
-    fi
-    
-    # Fallback: download from GitHub releases
-    warn "Repository not available, falling back to GitHub release..."
-    log "Installing from GitHub releases (.deb)..."
-    
-    LATEST_RELEASE_URL="https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest"
-    RELEASE_DATA=$(curl -s "$LATEST_RELEASE_URL")
-    RELEASE_TAG=$(echo "$RELEASE_DATA" | grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' | tr -cd '[:alnum:]._-')
-    [ -z "$RELEASE_TAG" ] && error "Failed to fetch version."
-    CLEAN_VERSION="${RELEASE_TAG#v}"
-    
+    command -v apt-get >/dev/null 2>&1 || error "apt-get was not found, but this looks like a Debian/Ubuntu system. Install apt, or run: $0 --build"
+
+    local deb_url
+    deb_url=$(release_asset_url deb)
+    local file="${deb_url##*/}"
+
+    # Runtime tools the .deb's own Depends line does not cover (gdbus/gsettings, notify-send).
+    local extra=() pkg
+    for pkg in libglib2.0-bin libnotify-bin; do
+        is_pkg_installed "$pkg" || extra+=("$pkg")
+    done
+
     TEMP_DIR=$(mktemp -d)
+    CLEANUP_PATHS+=("$TEMP_DIR")
     chmod 755 "$TEMP_DIR"
-    cd "$TEMP_DIR"
-    trap 'rm -rf "$TEMP_DIR"' EXIT
-    
-    FILE_URL=$(echo "$RELEASE_DATA" | grep "browser_download_url.*\.deb" | grep -i "${DEB_ARCH}" | head -1 | cut -d '"' -f 4)
-    if [ -n "$FILE_URL" ]; then
-        FILE=$(basename "$FILE_URL")
-    else
-        FILE="win11-clipboard-history_${CLEAN_VERSION}_${DEB_ARCH}.deb"
-        FILE_URL="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$RELEASE_TAG/$FILE"
-    fi
-    
-    log "Downloading $FILE..."
-    if ! curl -L -o "$FILE" "$FILE_URL" --progress-bar --fail; then
-        error "Failed to download $FILE"
-    fi
-    chmod 644 "$FILE"
-    
-    log "Installing dependencies..."
-    sudo apt-get install -y xclip wl-clipboard acl python3-gi gir1.2-gtk-3.0 || true
-    sudo apt-get install -y libayatana-appindicator3-1 || sudo apt-get install -y libappindicator3-1 || true
-    
-    log "Installing .deb package..."
-    yes | sudo apt-get install -y "./$FILE"
-    
-    success "Installed via APT (from GitHub release)"
+
+    log "Downloading $file ($RELEASE_TAG)..."
+    curl -fL --progress-bar -o "$TEMP_DIR/$file" "$deb_url" \
+        || error "Download failed: $deb_url. Check your connection and re-run, or build from source with: $0 --build"
+    chmod 644 "$TEMP_DIR/$file"
+
+    remove_legacy_cloudsmith_source
+
+    explain_sudo
+    log "Installing $file and its runtime dependencies with apt..."
+    # --reinstall/--allow-downgrades: an older upstream build may already own this package name.
+    sudo apt-get update -qq || warn "apt-get update failed; continuing with the package lists apt already has."
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall --allow-downgrades "$TEMP_DIR/$file" "${extra[@]}" \
+        || error "apt could not install $file. Read the apt error above; fix it (often 'sudo apt --fix-broken install') and re-run."
+
+    success "Installed $RELEASE_TAG from the GitHub release."
 }
 
 install_rpm() {
-    log "Setting up RPM repository (Cloudsmith)..."
-    
-    local env_args=()
-    if [[ "$DISTRO_ID" == "fedora-asahi-remix" ]]; then
-        log "Detected Fedora Asahi Remix - using standard Fedora repository..."
-        local fedora_version=""
-        if [ -f /etc/os-release ]; then
-            fedora_version="$(awk -F= '$1=="VERSION_ID"{gsub(/"/,"",$2);print $2}' /etc/os-release)"
-        fi
-        env_args=("distro=fedora" "codename=")
-        if [[ -n "$fedora_version" ]]; then
-            env_args+=("version=$fedora_version")
-        fi
-    fi
-    
-    # Try Cloudsmith repository first (enables auto-updates)
-    local repo_setup_success=false
-    if [[ ${#env_args[@]} -gt 0 ]]; then
-        # Export the override vars so they survive through sudo -E inside the
-        # Cloudsmith setup script (env + bash -c loses them at the sudo boundary).
-        for _evar in "${env_args[@]}"; do
-            export "${_evar?}"
-        done
-        curl -1sLf "https://dl.cloudsmith.io/public/${CLOUDSMITH_REPO}/setup.rpm.sh" | sudo -E bash 2>/dev/null && repo_setup_success=true
-        # Clean up exported overrides
-        unset distro version codename 2>/dev/null || true
-    else
-        curl -1sLf "https://dl.cloudsmith.io/public/${CLOUDSMITH_REPO}/setup.rpm.sh" | sudo -E bash 2>/dev/null && repo_setup_success=true
-    fi
-    
-    if [ "$repo_setup_success" = true ]; then
-        log "Installing win11-clipboard-history from repository..."
-        if sudo dnf install -y win11-clipboard-history; then
-            success "Installed via DNF repository! (auto-updates enabled)"
-            return 0
-        fi
-    fi
-    
-    # Fallback: download from GitHub releases
-    warn "Repository not available, falling back to GitHub release..."
     log "Installing from GitHub releases (.rpm)..."
     
     LATEST_RELEASE_URL="https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest"
@@ -297,7 +467,7 @@ install_rpm() {
     TEMP_DIR=$(mktemp -d)
     chmod 755 "$TEMP_DIR"
     cd "$TEMP_DIR"
-    trap 'rm -rf "$TEMP_DIR"' EXIT
+    CLEANUP_PATHS+=("$TEMP_DIR")
     
     FILE_URL=$(echo "$RELEASE_DATA" | grep "browser_download_url.*\.rpm" | grep -i "${RPM_ARCH}" | head -1 | cut -d '"' -f 4)
     if [ -n "$FILE_URL" ]; then
@@ -323,19 +493,6 @@ install_rpm() {
 }
 
 install_rpm_suse() {
-    log "Setting up RPM repository (Cloudsmith)..."
-    
-    # Try Cloudsmith repository first (enables auto-updates)
-    if curl -1sLf "https://dl.cloudsmith.io/public/${CLOUDSMITH_REPO}/setup.rpm.sh" | sudo -E bash 2>/dev/null; then
-        log "Installing win11-clipboard-history from repository..."
-        if sudo zypper install -y win11-clipboard-history; then
-            success "Installed via Zypper repository! (auto-updates enabled)"
-            return 0
-        fi
-    fi
-    
-    # Fallback: download from GitHub releases
-    warn "Repository not available, falling back to GitHub release..."
     log "Installing from GitHub releases (.rpm)..."
     
     LATEST_RELEASE_URL="https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest"
@@ -347,7 +504,7 @@ install_rpm_suse() {
     TEMP_DIR=$(mktemp -d)
     chmod 755 "$TEMP_DIR"
     cd "$TEMP_DIR"
-    trap 'rm -rf "$TEMP_DIR"' EXIT
+    CLEANUP_PATHS+=("$TEMP_DIR")
     
     FILE_URL=$(echo "$RELEASE_DATA" | grep "browser_download_url.*\.rpm" | grep -i "${RPM_ARCH}" | head -1 | cut -d '"' -f 4)
     if [ -n "$FILE_URL" ]; then
@@ -561,11 +718,19 @@ EOF
 }
 
 
-BUILD_FROM_SOURCE=false
 for arg in "$@"; do
-    if [ "$arg" = "--build" ] || [ "$arg" = "--build-from-source" ]; then
-        BUILD_FROM_SOURCE=true
-    fi
+    case "$arg" in
+        --build|--build-from-source) BUILD_FROM_SOURCE=true ;;
+        --dry-run) DRY_RUN=true ;;
+        -h|--help)
+            echo "Usage: install.sh [--build] [--dry-run]"
+            echo "  --build     build from source instead of installing the prebuilt release"
+            echo "  --dry-run   print what would be installed and exit without changing anything"
+            echo "  WIN11CLIP_TAG=vX.Y.Z pins the release (or, with --build, the source tag) to install"
+            exit 0
+            ;;
+        *) error "Unknown option: $arg (see --help)" ;;
+    esac
 done
 
 is_pkg_installed() {
@@ -573,100 +738,140 @@ is_pkg_installed() {
     dpkg -s "$pkg" >/dev/null 2>&1 || dpkg -s "${pkg}t64" >/dev/null 2>&1
 }
 
-check_and_install_deps() {
-    local RUNTIME_DEPS=(xclip wl-clipboard acl libgtk-3-0 librsvg2-2)
-    local BUILD_DEPS=(build-essential curl wget file pkg-config libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libudev-dev)
-    local MISSING_DEPS=()
-    
-    # Ensure apt package list is updated before checking package availability
-    sudo apt-get update -qq || true
-
-    local use_webkit_41=false
-    if apt-cache show libwebkit2gtk-4.1-dev >/dev/null 2>&1; then
-        use_webkit_41=true
-    else
-        local major_ver="${DISTRO_VERSION_ID%%.*}"
-        if [[ "$SYSTEM_FAMILY_INFO" =~ "ubuntu" && "$major_ver" -ge 24 ]] 2>/dev/null; then
-            use_webkit_41=true
-        elif [[ "$SYSTEM_FAMILY_INFO" =~ "debian" && "$major_ver" -ge 12 ]] 2>/dev/null; then
-            use_webkit_41=true
-        fi
-    fi
-
-    if [ "$use_webkit_41" = true ]; then
-        BUILD_DEPS+=(libwebkit2gtk-4.1-dev)
-        RUNTIME_DEPS+=(libwebkit2gtk-4.1-0)
-    else
-        BUILD_DEPS+=(libwebkit2gtk-4.0-dev)
-        RUNTIME_DEPS+=(libwebkit2gtk-4.0-37)
-    fi
-    
-    for dep in "${RUNTIME_DEPS[@]}" "${BUILD_DEPS[@]}"; do
-        if ! is_pkg_installed "$dep"; then
-            MISSING_DEPS+=("$dep")
-        fi
-    done
-
-    if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
-        log "Missing dependencies detected: ${MISSING_DEPS[*]}"
-        log "Installing via apt-get..."
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${MISSING_DEPS[@]}"
-    else
-        success "All apt dependencies are satisfied."
-    fi
+# apt packages the app needs at runtime beyond its shared libraries (the .deb's own Depends
+# line already covers these when installing the release package).
+runtime_apt_deps() {
+    local pkexec_pkg="pkexec"
+    apt-cache show pkexec >/dev/null 2>&1 || pkexec_pkg="policykit-1"
+    echo "xclip xdotool wl-clipboard acl libglib2.0-bin libnotify-bin $pkexec_pkg libgtk-3-0 librsvg2-2 libayatana-appindicator3-1"
 }
 
-install_node_rust_cargo() {
-    if ! command -v curl >/dev/null 2>&1; then
-        sudo apt-get install -y curl
+build_apt_deps() {
+    local webkit="libwebkit2gtk-4.1"
+    apt-cache show libwebkit2gtk-4.1-dev >/dev/null 2>&1 || webkit="libwebkit2gtk-4.0"
+    echo "build-essential curl wget file git pkg-config libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libudev-dev ${webkit}-dev $( [ "$webkit" = libwebkit2gtk-4.1 ] && echo libwebkit2gtk-4.1-0 || echo libwebkit2gtk-4.0-37 )"
+}
+
+check_and_install_deps() {
+    command -v apt-get >/dev/null 2>&1 || error "Building from source needs apt-get to install system libraries, and it was not found. Install the GTK3/WebKitGTK 4.1 development packages for your distribution (see the README), then re-run."
+
+    local MISSING_RUNTIME=() MISSING_BUILD=() dep
+    for dep in $(runtime_apt_deps); do
+        is_pkg_installed "$dep" || MISSING_RUNTIME+=("$dep")
+    done
+    for dep in $(build_apt_deps); do
+        is_pkg_installed "$dep" || MISSING_BUILD+=("$dep")
+    done
+
+    if [ $(( ${#MISSING_RUNTIME[@]} + ${#MISSING_BUILD[@]} )) -eq 0 ]; then
+        success "All apt dependencies are satisfied."
+        return 0
     fi
 
-    if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-        warn "Node.js or npm is missing."
-        echo "Run the following commands to install Node.js (v20):"
-        echo "  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -"
-        echo "  sudo apt-get install -y nodejs"
-        if [ "$DEBIAN_FRONTEND" = "noninteractive" ] || [ ! -t 0 ]; then
-            log "Non-interactive environment detected, attempting auto-install of Node.js..."
-            curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
-        else
-            error "Please install Node.js to build from source."
-        fi
+    log "Missing system packages: ${MISSING_RUNTIME[*]} ${MISSING_BUILD[*]}"
+    explain_sudo
+    sudo apt-get update -qq || warn "apt-get update failed; continuing with the package lists apt already has."
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${MISSING_RUNTIME[@]}" "${MISSING_BUILD[@]}" \
+        || error "apt could not install the build dependencies. Read the apt error above, fix it, and re-run."
+
+    # Remember which build packages are ours, so uninstall.sh never removes ones you already had.
+    for dep in "${MISSING_BUILD[@]}"; do record_install "apt-build:$dep"; done
+}
+
+# Use the checkout the installer runs from, or shallow-clone one (curl | bash has none).
+prepare_source_tree() {
+    if [ -f package.json ] && [ -f src-tauri/Cargo.toml ]; then
+        return 0
+    fi
+    local here
+    here="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." 2>/dev/null && pwd)" || here=""
+    if [ -n "$here" ] && [ -f "$here/package.json" ] && [ -f "$here/src-tauri/Cargo.toml" ]; then
+        cd "$here"
+        return 0
     fi
 
-    if ! command -v cargo >/dev/null 2>&1; then
-        warn "Rust/Cargo is missing."
-        echo "Run the following command to install Rust:"
-        echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
-        echo "  source \$HOME/.cargo/env"
-        if [ "$DEBIAN_FRONTEND" = "noninteractive" ] || [ ! -t 0 ]; then
-            log "Non-interactive environment detected, attempting auto-install of Rust..."
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            export PATH="$HOME/.cargo/bin:$PATH"
-        else
-            error "Please install Rust to build from source."
-        fi
-    fi
+    command -v git >/dev/null 2>&1 || error "git is needed to download the source. Install it with: sudo apt install git"
+    # Not /tmp: the build tree is several GB.
+    mkdir -p "$HOME/.cache"
+    local dir
+    dir=$(mktemp -d "$HOME/.cache/win11clip-src.XXXXXX")
+    CLEANUP_PATHS+=("$dir")
+    log "Downloading the source from github.com/$REPO_OWNER/$REPO_NAME${RELEASE_TAG_PIN:+ ($RELEASE_TAG_PIN)}..."
+    git clone --depth 1 ${RELEASE_TAG_PIN:+--branch "$RELEASE_TAG_PIN"} "https://github.com/$REPO_OWNER/$REPO_NAME.git" "$dir" \
+        || error "Could not download the source from github.com/$REPO_OWNER/$REPO_NAME. Check your connection and re-run."
+    cd "$dir"
 }
 
 build_from_source() {
     log "Starting build from source..."
+    confirm_packaged_copy_removal
     check_and_install_deps
-    install_node_rust_cargo
-    
-    [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
-    
-    log "Installing npm dependencies..."
-    npm install
-    
-    log "Building the Tauri application..."
-    npm run tauri:build
-    
+    ensure_node
+    ensure_rust
+    prepare_source_tree
+
+    log "Installing npm dependencies (from package-lock.json)..."
+    npm ci || error "npm ci failed. Read the error above; re-running the installer is safe."
+
+    log "Building the app (this takes several minutes the first time)..."
+    # --no-bundle: only the binary is needed here; `make install` puts it in place.
+    npm run tauri:build -- --no-bundle || error "The build failed. Read the error above; re-running the installer is safe."
+
     log "Installing system-wide..."
-    sudo env "PATH=$PATH" make install PREFIX=/usr/local
-    
+    explain_sudo
+    remove_legacy_cloudsmith_source
+    # The wrapper looks in /usr/bin before /usr/local/lib, so a packaged copy (for example
+    # upstream's) would keep running instead of the build that was just made.
+    remove_packaged_copy
+    sudo env "PATH=$PATH" make install PREFIX=/usr/local || error "make install failed. Read the error above."
+
     success "Build and install from source completed successfully."
+}
+
+# What the installer would do on this machine, without changing anything.
+print_plan() {
+    local ext="deb" mode="prebuilt release"
+    [[ "$SYSTEM_FAMILY_INFO" =~ (fedora|rhel|centos|suse) ]] && ext="rpm"
+    echo ""
+    echo -e "${C_BOLD}Dry run: nothing will be changed.${NC}"
+    echo "  System      : $DISTRO_ID ($DEB_ARCH), session: ${XDG_SESSION_TYPE:-unknown}, desktop: ${XDG_CURRENT_DESKTOP:-unknown}"
+
+    if [ "$BUILD_FROM_SOURCE" = true ]; then
+        mode="build from source (--build)"
+    elif [[ "$SYSTEM_FAMILY_INFO" =~ arch ]]; then
+        mode="AUR package"
+    elif release_is_usable "$ext"; then
+        echo "  Release     : $RELEASE_TAG -> $(release_asset_url "$ext")"
+    else
+        mode="build from source (no usable release: $RELEASE_PROBLEM)"
+        BUILD_FROM_SOURCE=true
+    fi
+    echo "  Install mode: $mode"
+
+    if command -v dpkg >/dev/null 2>&1; then
+        local pkgs=() dep
+        for dep in $(runtime_apt_deps); do is_pkg_installed "$dep" || pkgs+=("$dep"); done
+        echo "  Runtime apt packages still missing (sudo apt): ${pkgs[*]:-none}"
+        if [ "$BUILD_FROM_SOURCE" = true ]; then
+            pkgs=(); for dep in $(build_apt_deps); do is_pkg_installed "$dep" || pkgs+=("$dep"); done
+            echo "  Build apt packages still missing (sudo apt): ${pkgs[*]:-none}"
+            load_nvm; [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+            node_ok && echo "  Node.js     : already available ($(node -v))" || echo "  Node.js     : will be installed with nvm into ~/.nvm (no sudo)"
+            rust_ok && echo "  Rust        : already available ($(rustc --version | awk '{print $2}'))" || echo "  Rust        : will be installed with rustup into ~/.cargo (no sudo)"
+        fi
+    fi
+    [ -f "$LEGACY_APT_LIST" ] && echo "  Will ask    : before removing $LEGACY_APT_LIST (old upstream apt source) and its key (default No, backed up first)"
+    if [ "$BUILD_FROM_SOURCE" = true ] && command -v dpkg >/dev/null 2>&1 && dpkg -s win11-clipboard-history >/dev/null 2>&1; then
+        echo "  Will ask    : before removing the installed apt package win11-clipboard-history $(dpkg-query -W -f='${Version}' win11-clipboard-history) (default No, backed up first)"
+    fi
+    echo "  Extensions  : win11-clipboard-bridge, window-calls (patched) -> ~/.local/share/gnome-shell/extensions"
+    echo "  spawn-at    : $(command -v spawn-at >/dev/null 2>&1 && echo 'already installed, will be refreshed' || echo 'will be installed')"
+    echo "  Shortcuts   : Super+V, Ctrl+Alt+V, Super+. via GNOME custom keybindings"
+    if [[ "${XDG_SESSION_TYPE:-}" == "wayland" ]]; then
+        echo "  Note        : on Wayland, newly installed or updated GNOME extensions only load after you log out and back in."
+    fi
+    echo "  sudo        : needed once for apt and for installing under /usr"
+    echo ""
 }
 
 launch_app() {
@@ -827,7 +1032,7 @@ install_window_calls() {
             mkdir -p "bundled-deps/extensions/$WC_UUID"
             staging_needed=true
             local fetched=false
-            local owners=("$REPO_OWNER" "harshp2008" "gustavosett")
+            local owners=("$REPO_OWNER" "harshp2008")
             local repos=("$REPO_NAME" "Windows-11-Clipboard-History-For-Linux")
             for owner in "${owners[@]}"; do
                 for repo in "${repos[@]}"; do
@@ -881,6 +1086,10 @@ install_window_calls() {
 
 install_gnome_extensions() {
     if ! command -v gnome-extensions &>/dev/null; then
+        if [[ "${XDG_CURRENT_DESKTOP:-}" == *GNOME* ]]; then
+            warn "GNOME was detected but the 'gnome-extensions' command is missing, so the focus/always-on-top"
+            warn "extensions were NOT installed. Install it with: sudo apt install gnome-shell   (then re-run)"
+        fi
         return 0
     fi
     
@@ -1117,15 +1326,44 @@ main() {
     echo "╚═══════════════════════════════════════════════════════════╝"
     echo ""
     
-    command -v curl >/dev/null 2>&1 || error "curl is required."
+    trap cleanup EXIT
+
+    command -v curl >/dev/null 2>&1 || error "curl is required. Install it with: sudo apt install curl (then re-run)."
     
     detect_distro
     detect_arch
     log "Detected: $DISTRO_ID (Family: $SYSTEM_FAMILY_INFO)"
+
+    if [ "$DRY_RUN" = true ]; then
+        print_plan
+        exit 0
+    fi
     
     # Check WebKitGTK compatibility
     check_webkit_compatibility
     webkit_status=$?
+
+    # The default path installs the prebuilt release. Without a usable one (not published yet,
+    # older than the fixes, offline), say so plainly and build from source instead.
+    if [ "$BUILD_FROM_SOURCE" != true ] && ! [[ "$SYSTEM_FAMILY_INFO" =~ arch ]]; then
+        local gate_ext="deb"
+        [[ "$SYSTEM_FAMILY_INFO" =~ (fedora|rhel|centos|suse) ]] && gate_ext="rpm"
+        [ "$webkit_status" -eq 1 ] && gate_ext="AppImage"
+        if ! release_is_usable "$gate_ext"; then
+            warn "No usable prebuilt release: $RELEASE_PROBLEM."
+            warn "Falling back to building from source. This installs build tools (system libraries via apt,"
+            warn "Node.js via nvm and Rust via rustup in your home folder, no sudo for those) and takes several minutes."
+            if [ -r /dev/tty ]; then
+                local reply=""
+                read -r -p "Build from source now? [Y/n] " reply < /dev/tty || true
+                [[ "$reply" =~ ^[Nn] ]] && error "Cancelled. Re-run later, or run: $0 --dry-run to see the plan."
+            else
+                log "Continuing in 5 seconds (Ctrl+C to cancel)..."
+                sleep 5
+            fi
+            BUILD_FROM_SOURCE=true
+        fi
+    fi
     
     if [ "$BUILD_FROM_SOURCE" = true ]; then
         build_from_source

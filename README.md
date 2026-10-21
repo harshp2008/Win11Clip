@@ -58,6 +58,14 @@ To force a local build from source during installation:
 ./scripts/install.sh --build
 ```
 
+The installer needs nothing pre-installed beyond `curl` and `sudo`. By default it installs the prebuilt `.deb` from this repository's latest GitHub release (plus any missing runtime packages via `apt`, asking for `sudo` once). If no usable release exists, or with `--build`, it builds from source: system libraries come from `apt`, while Node.js (nvm) and Rust (rustup) are installed in your home folder without `sudo`, and only if you don't already have them. To see exactly what it would do first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/harshp2008/Win11Clip/master/scripts/install.sh | bash -s -- --dry-run
+```
+
+If it finds an older upstream package or apt source of `gustavosett/Windows-11-Clipboard-History-For-Linux`, it explains and asks before removing anything (default No), and saves a copy under `~/.local/state/win11clip-installer/backup`. `uninstall.sh` removes what the installer added, offers to restore anything the installer removed, and asks before touching shared components (`spawn-at`, `window-calls`) or any build tools it installed.
+
 ---
 
 ## 🧩 Wayland & GNOME Cursor Positioning

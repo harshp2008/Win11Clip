@@ -28,6 +28,19 @@ if [ "$EUID" -ne 0 ]; then
     SUDO_CMD="sudo"
 fi
 
+# Things install.sh recorded as added by itself (build tools). Anything not listed predates
+# the install and is never removed here.
+MANIFEST="$HOME/.config/win11-clipboard-history/installer-manifest"
+
+# ask_yes_no "question" -> 0 only on an explicit yes; defaults to No, and No when non-interactive.
+ask_yes_no() {
+    local reply=""
+    if ( : < /dev/tty ) 2>/dev/null; then
+        read -r -p "$1 [y/N] " reply < /dev/tty || true
+    fi
+    [[ "$reply" =~ ^[Yy] ]]
+}
+
 echo ""
 echo "╔═══════════════════════════════════════════════════════════╗"
 echo "║     Win11 Clipboard History - Uninstaller                 ║"
@@ -49,6 +62,79 @@ fi
 rm -rf "$HOME/.local/share/gnome-shell/extensions/$BRIDGE_UUID"
 $SUDO_CMD rm -rf "/usr/share/gnome-shell/extensions/$BRIDGE_UUID" 2>/dev/null || true
 success "win11-clipboard-bridge removed."
+
+# 2b. Things install.sh removed with your consent (see its backups), and old upstream sources
+BACKUP_DIR="$HOME/.local/state/win11clip-installer/backup"
+REMOVED_SOURCES=()
+REMOVED_PACKAGE=""
+RESTORED_SOURCES=false
+if [ -f "$MANIFEST" ]; then
+    while IFS= read -r line; do REMOVED_SOURCES+=("${line#removed-source:}"); done < <(grep '^removed-source:' "$MANIFEST")
+    REMOVED_PACKAGE=$(sed -n 's/^removed-package://p' "$MANIFEST" | head -n 1)
+fi
+
+if [ ${#REMOVED_SOURCES[@]} -gt 0 ]; then
+    echo ""
+    echo "install.sh removed this upstream package source from your system (a copy was saved):"
+    printf '      %s\n' "${REMOVED_SOURCES[@]}"
+    if ask_yes_no "Restore it? It makes apt offer gustavosett's upstream build again."; then
+        for f in "${REMOVED_SOURCES[@]}"; do
+            if [ -f "$BACKUP_DIR/apt-source$f" ]; then
+                $SUDO_CMD install -Dm644 "$BACKUP_DIR/apt-source$f" "$f" || warn "Could not restore $f (copy kept at $BACKUP_DIR/apt-source$f)."
+            else
+                warn "No backup found for $f."
+            fi
+        done
+        command -v apt-get &>/dev/null && { $SUDO_CMD apt-get update -qq 2>/dev/null || true; }
+        RESTORED_SOURCES=true
+        success "Restored the upstream package source."
+    else
+        success "Left it removed. The saved copy stays in $BACKUP_DIR/apt-source."
+    fi
+fi
+
+if [ -n "$REMOVED_PACKAGE" ]; then
+    echo ""
+    warn "install.sh removed the apt package ${REMOVED_PACKAGE%%=*} ${REMOVED_PACKAGE#*=} so that its source build would run."
+    echo "    It is not reinstalled automatically. A copy of its files is in $BACKUP_DIR/package."
+    echo "    To get that version back (needs the upstream source above): sudo apt install ${REMOVED_PACKAGE}"
+fi
+
+# Any other leftover upstream source (older installers added it without recording it).
+LEGACY_SOURCES=()
+for f in /etc/apt/sources.list.d/gustavosett-clipboard-manager.list \
+         /usr/share/keyrings/gustavosett-clipboard-manager-archive-keyring.gpg \
+         /etc/yum.repos.d/gustavosett-clipboard-manager*.repo \
+         /etc/zypp/repos.d/gustavosett-clipboard-manager*.repo; do
+    [ -f "$f" ] && LEGACY_SOURCES+=("$f")
+done
+if [ "$RESTORED_SOURCES" != true ] && [ ${#LEGACY_SOURCES[@]} -gt 0 ]; then
+    echo ""
+    echo "An old upstream package source (added by an older installer) is still on this system:"
+    printf '      %s\n' "${LEGACY_SOURCES[@]}"
+    if ask_yes_no "Remove it? Choose No if you use gustavosett's upstream package on purpose."; then
+        $SUDO_CMD rm -f "${LEGACY_SOURCES[@]}" || warn "Could not remove them; run: sudo rm -f ${LEGACY_SOURCES[*]}"
+        command -v apt-get &>/dev/null && { $SUDO_CMD apt-get update -qq 2>/dev/null || true; }
+        success "Old upstream package source removed."
+    else
+        success "Kept the old upstream package source."
+    fi
+fi
+
+# 2c. window-calls (patched copy installed by install.sh; other GNOME tools may rely on it)
+WC_UUID="window-calls@domandoman.xyz"
+WC_LOCAL="$HOME/.local/share/gnome-shell/extensions/$WC_UUID"
+if [ -d "$WC_LOCAL" ]; then
+    echo ""
+    echo "window-calls is a shared GNOME extension that install.sh deployed (patched build)."
+    if ask_yes_no "Remove window-calls too? Choose No if other tools use it."; then
+        command -v gnome-extensions &>/dev/null && { gnome-extensions disable "$WC_UUID" 2>/dev/null || true; }
+        rm -rf "$WC_LOCAL"
+        success "window-calls removed."
+    else
+        success "Kept window-calls."
+    fi
+fi
 
 # 3. Prompt for spawn-at removal
 SPAWN_AT_BIN=""
@@ -222,6 +308,28 @@ else
     success "Skipped GNOME shortcuts (not on GNOME or gsettings/python3 missing)."
 fi
 
+# 4b. Build tools the installer added for --build (only what the manifest lists)
+if [ -f "$MANIFEST" ]; then
+    BUILD_PKGS=$(sed -n 's/^apt-build://p' "$MANIFEST" | tr '\n' ' ')
+    if [ -n "${BUILD_PKGS// /}" ]; then
+        echo ""
+        echo "install.sh installed these build packages (they were not on your system before):"
+        echo "  $BUILD_PKGS"
+        if ask_yes_no "Remove them with apt? apt will show what else it would remove and ask first."; then
+            # Not -y on purpose: apt lists dependents and asks, so nothing you rely on goes silently.
+            $SUDO_CMD apt-get remove $BUILD_PKGS < /dev/tty || warn "Skipped. Remove them later with: sudo apt remove $BUILD_PKGS"
+        else
+            success "Kept the build packages. To remove them later: sudo apt remove $BUILD_PKGS"
+        fi
+    fi
+    if grep -qx "nvm-installed" "$MANIFEST" && [ -d "$HOME/.nvm" ]; then
+        if ask_yes_no "Remove ~/.nvm (Node.js installed by install.sh)?"; then rm -rf "$HOME/.nvm"; success "Removed ~/.nvm."; else success "Kept ~/.nvm (remove later with: rm -rf ~/.nvm)"; fi
+    fi
+    if grep -qx "rustup-installed" "$MANIFEST" && [ -d "$HOME/.rustup" ]; then
+        if ask_yes_no "Remove ~/.rustup and ~/.cargo (Rust installed by install.sh)?"; then rm -rf "$HOME/.rustup" "$HOME/.cargo"; success "Removed ~/.rustup and ~/.cargo."; else success "Kept ~/.rustup and ~/.cargo (remove later with: rm -rf ~/.rustup ~/.cargo)"; fi
+    fi
+fi
+
 # 5. Clean Binaries, Config, and Package
 log "Cleaning configuration, packages, and binaries..."
 # Package manager (APT / RPM / Pacman / AppImage)
@@ -249,7 +357,11 @@ for target in \
     "/usr/local/bin/win11-clipboard-history-bin" \
     "/usr/local/bin/win11-clipboard-uninstall" \
     "/usr/share/applications/win11-clipboard-history.desktop" \
-    "/usr/local/share/applications/win11-clipboard-history.desktop"; do
+    "/usr/local/share/applications/win11-clipboard-history.desktop" \
+    "/usr/local/share/icons/hicolor/128x128/apps/win11-clipboard-history.png" \
+    "/usr/local/share/icons/hicolor/256x256/apps/win11-clipboard-history.png" \
+    "/etc/udev/rules.d/99-win11-clipboard-input.rules" \
+    "/etc/modules-load.d/win11-clipboard.conf"; do
     if [ -e "$target" ] || [ -L "$target" ]; then
         $SUDO_CMD rm -f "$target"
         if [ -e "$target" ] || [ -L "$target" ]; then
@@ -258,7 +370,14 @@ for target in \
     fi
 done
 
+# Where `make install` (the --build path) puts the app binary
+$SUDO_CMD rm -rf "/usr/local/lib/win11-clipboard-history"
+
 success "Configuration and binaries removed."
+if [ -d "$BACKUP_DIR" ]; then
+    echo "    Backups of what install.sh removed are kept in $BACKUP_DIR"
+    echo "    (delete them when you no longer need them: rm -rf ~/.local/state/win11clip-installer)"
+fi
 
 # Display completion message
 echo -e "\n${BLUE}┌──────────────────────────────────────────────────────────────┐${NC}"
