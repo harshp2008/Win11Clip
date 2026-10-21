@@ -12,6 +12,9 @@ LIBDIR := $(PREFIX)/lib
 BINDIR := $(PREFIX)/bin
 DATADIR := $(PREFIX)/share
 DESTDIR ?=
+# `make install` also installs the bundled spawn-at into BINDIR. scripts/install.sh passes
+# INSTALL_SPAWN_AT=no because it manages the copy in ~/.local/bin itself.
+INSTALL_SPAWN_AT ?= yes
 
 # Detect distro
 DISTRO := $(shell \
@@ -266,12 +269,16 @@ install: install-extension enable-extension
 	@# Install wrapper script to bin
 	install -Dm755 src-tauri/bundle/linux/wrapper.sh $(DESTDIR)$(BINDIR)/$(APP_NAME)
 	@# Install spawn-at utility, unless a newer one is already there (never downgrade)
-	@bundled=$$(bundled-deps/bin/spawn-at -V 2>/dev/null | sed -n '1s/^spawn-at //p'); \
-	existing=$$($(DESTDIR)$(BINDIR)/spawn-at -V 2>/dev/null | sed -n '1s/^spawn-at //p'); \
-	if [ -n "$$bundled" ] && [ -n "$$existing" ] && [ "$$(printf '%s\n%s\n' "$$existing" "$$bundled" | sort -V | tail -n 1)" = "$$existing" ]; then \
-		echo "Keeping spawn-at $$existing already installed (bundled is $$bundled)"; \
+	@if [ "$(INSTALL_SPAWN_AT)" = "no" ]; then \
+		echo "Not installing spawn-at into $(BINDIR) (INSTALL_SPAWN_AT=no)"; \
 	else \
-		install -Dm755 bundled-deps/bin/spawn-at $(DESTDIR)$(BINDIR)/spawn-at; \
+		bundled=$$(bundled-deps/bin/spawn-at -V 2>/dev/null | sed -n '1s/^spawn-at //p'); \
+		existing=$$($(DESTDIR)$(BINDIR)/spawn-at -V 2>/dev/null | sed -n '1s/^spawn-at //p'); \
+		if [ -n "$$bundled" ] && [ -n "$$existing" ] && [ "$$(printf '%s\n%s\n' "$$existing" "$$bundled" | sort -V | tail -n 1)" = "$$existing" ]; then \
+			echo "Keeping spawn-at $$existing already installed (bundled is $$bundled)"; \
+	else \
+			install -Dm755 bundled-deps/bin/spawn-at $(DESTDIR)$(BINDIR)/spawn-at; \
+		fi; \
 	fi
 	@# Set executable permissions
 	chmod +x $(DESTDIR)$(BINDIR)/$(APP_NAME)

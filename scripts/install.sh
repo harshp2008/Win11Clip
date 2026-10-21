@@ -825,7 +825,7 @@ build_from_source() {
     # The wrapper looks in /usr/bin before /usr/local/lib, so a packaged copy (for example
     # upstream's) would keep running instead of the build that was just made.
     remove_packaged_copy
-    sudo env "PATH=$PATH" make install PREFIX=/usr/local || error "make install failed. Read the error above."
+    sudo env "PATH=$PATH" make install PREFIX=/usr/local INSTALL_SPAWN_AT=no || error "make install failed. Read the error above."
 
     success "Build and install from source completed successfully."
 }
@@ -876,21 +876,20 @@ print_plan() {
     sa_v=""
     if [ -n "$sa_bundled" ]; then sa_v=$(spawn_at_version "$sa_bundled"); fi
     sa_src_v="$sa_v"
-    for sa_t in "$SPAWN_AT_SYSTEM_BIN" "$SPAWN_AT_USER_BIN"; do
+    for sa_t in "$SPAWN_AT_USER_BIN" "$SPAWN_AT_SYSTEM_BIN"; do
         sa_iv=$(spawn_at_version "$sa_t")
         if [ -n "$sa_iv" ] && { [ -z "$sa_src_v" ] || semver_lt "$sa_src_v" "$sa_iv"; }; then sa_src_v="$sa_iv"; fi
     done
     if [ -n "$sa_v" ]; then
-        echo "  spawn-at    : bundled $sa_v (needs $SPAWN_AT_MIN_VERSION or newer); a newer installed copy is kept, older ones are replaced"
+        echo "  spawn-at    : bundled $sa_v (needs $SPAWN_AT_MIN_VERSION or newer); one managed copy in ~/.local/bin, a newer installed copy is kept"
     else
         echo "  spawn-at    : no bundled copy here; $SPAWN_AT_MIN_VERSION or newer is downloaded from github.com/harshp2008/spawn-at unless one is already installed"
         sa_src_v="${sa_src_v:-$SPAWN_AT_MIN_VERSION}"
     fi
-    for sa_t in "$SPAWN_AT_SYSTEM_BIN" "$SPAWN_AT_USER_BIN"; do
-        echo "                $(spawn_at_copy_plan "$sa_t" "$sa_src_v")"
-    done
+    echo "                $(spawn_at_copy_plan "$SPAWN_AT_USER_BIN" "$sa_src_v")"
+    echo "                $(spawn_at_system_copy_plan "$sa_src_v")"
     echo "                its GNOME extension is deployed by that same CLI, so the two never differ"
-    echo "  Shortcuts   : Super+V, Ctrl+Alt+V, Super+. via GNOME custom keybindings"
+    echo "  Shortcuts   : Super+V, Ctrl+Alt+V, Super+. via GNOME custom keybindings, running $(spawn_at_shortcut_exe planned) by its full path"
     if [[ "${XDG_SESSION_TYPE:-}" == "wayland" ]]; then
         echo "  Note        : on Wayland, newly installed or updated GNOME extensions only load after you log out and back in."
         echo "  After login : a one-time check (autostart) reports in plain English if an extension did not load; log: ~/.local/state/win11clip-installer/firstrun.log"
@@ -924,8 +923,13 @@ launch_app() {
 # Oldest spawn-at with the stale-arm fix: extension protocol 7 plus a CLI that withdraws its own
 # unclaimed arm. bundled-deps/VERSIONS must list at least this version.
 SPAWN_AT_MIN_VERSION="0.2.3"
-SPAWN_AT_SYSTEM_BIN="/usr/local/bin/spawn-at"
+# The one copy this installer manages. spawn-at's login updater (`spawn-at update --headless`) only
+# replaces the file it runs from, and only a file you own can be replaced without sudo, so a single
+# copy in ~/.local/bin is the only layout that cannot drift apart.
 SPAWN_AT_USER_BIN="$HOME/.local/bin/spawn-at"
+# Older installers (and `make install`) also put a copy here. It is never created any more; one that
+# is already there is brought up to date (or reported when that needs a sudo that is not available).
+SPAWN_AT_SYSTEM_BIN="/usr/local/bin/spawn-at"
 SPAWN_AT_EXT_DIR="$HOME/.local/share/gnome-shell/extensions/spawn-at@harsh.local"
 
 # Prints the release version an executable reports ("spawn-at 0.2.3" -> 0.2.3), or nothing when it
@@ -982,6 +986,30 @@ spawn_at_copy_plan() {
     else echo "$path: $have -> keep (not older than $want)"; fi
 }
 
+# One line saying what will happen to the old system-wide copy, given the version we will install.
+spawn_at_system_copy_plan() {
+    local want="$1" have
+    local path="$SPAWN_AT_SYSTEM_BIN"
+    if [ ! -e "$path" ]; then echo "$path: not installed -> not created (the shortcuts use ~/.local/bin/spawn-at)"; return; fi
+    have=$(spawn_at_version "$path")
+    if [ -z "$have" ]; then echo "$path: no release version (dev build?) -> left as it is, reported"
+    elif semver_lt "$have" "$want"; then echo "$path: $have, from an earlier installer -> replaced with $want (sudo), or reported if sudo is not available"
+    else echo "$path: $have -> keep (not older than $want)"; fi
+}
+
+# The spawn-at the GNOME shortcuts run: the full path of the managed copy, so they work whatever PATH
+# the Shell was started with (~/.local/bin is only on it when that folder existed at login). Quoted
+# when the path contains a space. Falls back to the system copy, then to the bare name; with an
+# argument ("planned", for --dry-run) the user copy is named even though it is not installed yet.
+spawn_at_shortcut_exe() {
+    local exe=""
+    if [ -x "$SPAWN_AT_USER_BIN" ] || [ -n "${1:-}" ]; then exe="$SPAWN_AT_USER_BIN"
+    elif [ -x "$SPAWN_AT_SYSTEM_BIN" ]; then exe="$SPAWN_AT_SYSTEM_BIN"
+    else exe="spawn-at"; fi
+    case "$exe" in *[[:space:]]*) exe="\"$exe\"" ;; esac
+    echo "$exe"
+}
+
 # Fingerprint of the deployed spawn-at extension files, to tell whether `spawn-at install` changed them.
 spawn_at_ext_fingerprint() {
     [ -d "$SPAWN_AT_EXT_DIR" ] || { echo "absent"; return; }
@@ -991,7 +1019,8 @@ spawn_at_ext_fingerprint() {
 install_spawn_at() {
     log "Installing spawn-at utility (minimum version $SPAWN_AT_MIN_VERSION)..."
     local bundled bundled_v="" src="" src_v="" t v
-    local targets=("$SPAWN_AT_SYSTEM_BIN" "$SPAWN_AT_USER_BIN")
+    # User copy first: when two copies report the same version, the extension is deployed from it.
+    local targets=("$SPAWN_AT_USER_BIN" "$SPAWN_AT_SYSTEM_BIN")
 
     bundled=$(bundled_spawn_at)
     if [ -n "$bundled" ]; then
@@ -1031,25 +1060,42 @@ install_spawn_at() {
     work="$(mktemp -d)"; CLEANUP_PATHS+=("$work")
     if [ -n "$src" ]; then
         cp -f "$src" "$work/spawn-at"; chmod 755 "$work/spawn-at"
-        for t in "${targets[@]}"; do
-            v=$(spawn_at_version "$t")
-            if [ -e "$t" ] && [ -n "$v" ] && ! semver_lt "$v" "$src_v"; then
-                log "Keeping $t ($v, not older than $src_v)"
-                continue
-            fi
+
+        # The managed copy, in ~/.local/bin (a newer one is never replaced).
+        t="$SPAWN_AT_USER_BIN"
+        v=$(spawn_at_version "$t")
+        if [ -e "$t" ] && [ -n "$v" ] && ! semver_lt "$v" "$src_v"; then
+            log "Keeping $t ($v, not older than $src_v)"
+        else
             if [ -e "$t" ] && [ -z "$v" ]; then
                 mkdir -p "$BACKUP_DIR"
-                cp -f "$t" "$BACKUP_DIR/spawn-at$(echo "$t" | tr / _).$(date +%Y%m%d-%H%M%S)" 2>/dev/null \
-                    && log "$t has no release version (a dev build?); saved a copy in $BACKUP_DIR"
+                if cp -f "$t" "$BACKUP_DIR/spawn-at$(echo "$t" | tr / _).$(date +%Y%m%d-%H%M%S)" 2>/dev/null; then
+                    log "$t has no release version (a dev build?); saved a copy in $BACKUP_DIR"
+                fi
             fi
-            if [ "$t" = "$SPAWN_AT_SYSTEM_BIN" ]; then
-                if sudo install -Dm755 "$work/spawn-at" "$t" 2>/dev/null; then log "Installed spawn-at $src_v to $t"
-                else warn "Could not write $t (needs sudo); the copy in ~/.local/bin is used instead."; fi
-            else
-                mkdir -p "$(dirname "$t")"
-                install -Dm755 "$work/spawn-at" "$t" && log "Installed spawn-at $src_v to $t"
+            mkdir -p "$(dirname "$t")"
+            install -Dm755 "$work/spawn-at" "$t" && log "Installed spawn-at $src_v to $t"
+        fi
+
+        # A system-wide copy from an earlier installer is never created here, but one that exists
+        # is kept in step: a bare `spawn-at` can still resolve to it, and it is the copy the login
+        # updater could not change (it needs sudo).
+        t="$SPAWN_AT_SYSTEM_BIN"
+        if [ -e "$t" ]; then
+            v=$(spawn_at_version "$t")
+            if [ -z "$v" ]; then
+                warn "$t is not a spawn-at release build (a dev build?); left as it is."
+            elif semver_lt "$v" "$src_v"; then
+                if sudo install -Dm755 "$work/spawn-at" "$t" 2>/dev/null; then
+                    log "Updated the old system-wide copy $t from $v to $src_v"
+                else
+                    warn "$t is still $v (older than $src_v) and could not be updated without sudo."
+                    warn "  The shortcuts and the login updater use $SPAWN_AT_USER_BIN, so Win11Clip is not affected, but typing"
+                    warn "  spawn-at in a terminal may run the old copy. Update it:  sudo install -m755 $SPAWN_AT_USER_BIN $t"
+                    warn "  or remove it:  sudo rm $t"
+                fi
             fi
-        done
+        fi
     fi
 
     # Deploy the extension from the CLI that stays installed (the newest copy, never older than the
@@ -1292,8 +1338,10 @@ configure_gnome_shortcuts() {
 
     log "Configuring GNOME custom shortcuts..."
 
-    local target_cb_cmd="spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard"
-    local target_emoji_cmd="spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --emoji"
+    local sa_exe
+    sa_exe=$(spawn_at_shortcut_exe)
+    local target_cb_cmd="$sa_exe spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard"
+    local target_emoji_cmd="$sa_exe spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --emoji"
 
     local raw_bindings
     raw_bindings=$(run_user_gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null || echo "[]")

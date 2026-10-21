@@ -72,7 +72,7 @@ If it finds an older upstream package or apt source of `gustavosett/Windows-11-C
 
 Under Wayland, security isolation prevents regular applications from reading global cursor coordinates or moving windows arbitrarily. Win11Clip achieves seamless, sub-pixel cursor positioning on GNOME Wayland via two tightly integrated components:
 
-1. **`spawn-at` CLI Utility (version 0.2.3 or newer):** Queries the mouse position and window coordinates directly via D-Bus, calculates monitor bounds and display offsets, and moves the Win11Clip window dynamically. It comes with its own GNOME Shell extension; both must be 0.2.3 or newer, because older ones can place the popup at a stale position after a shortcut press that found the popup already open. The installer bundles 0.2.3 (`bundled-deps/VERSIONS` records the checksum), replaces an older `spawn-at`, never downgrades a newer one, and deploys the extension from that same CLI.
+1. **`spawn-at` CLI Utility (version 0.2.3 or newer):** Queries the mouse position and window coordinates directly via D-Bus, calculates monitor bounds and display offsets, and moves the Win11Clip window dynamically. It comes with its own GNOME Shell extension; both must be 0.2.3 or newer, because older ones can place the popup at a stale position after a shortcut press that found the popup already open. The installer bundles 0.2.3 (`bundled-deps/VERSIONS` records the checksum), replaces an older `spawn-at`, never downgrades a newer one, and deploys the extension from that same CLI. It keeps **one** copy, in `~/.local/bin/spawn-at`: spawn-at's login updater can only replace the file it runs from, and only a file you own can be replaced without `sudo`, so a second copy in `/usr/local/bin` would be left behind at the old version. The GNOME shortcuts the installer creates run that copy by its full path, so they do not depend on `~/.local/bin` being on the `PATH` your session started with. If an earlier installer left a copy in `/usr/local/bin`, the installer brings it up to date (or tells you the `sudo` command if it cannot), and `uninstall.sh` removes it together with the user copy.
 2. **Patched `window-calls` Extension:** Bundles a hardened version of `window-calls@domandoman.xyz` enhanced with a custom `GetCoordinates` D-Bus endpoint to retrieve pointer positions and monitor geometry safely inside Mutter.
 
 > [!IMPORTANT]
@@ -98,7 +98,7 @@ Win11Clip registers custom global shortcuts directly with your desktop environme
 On GNOME, `<Super>v` is bound by default to `focus-active-notification` (Message Tray). Win11Clip detects this conflict and **safely reassigns** the collision without destroying any other user shortcuts.
 
 ### Manual Keybinding Setup (If Needed)
-If you are running a standalone window manager (Sway, Hyprland, i3, etc.) or prefer manual configuration:
+If you are running a standalone window manager (Sway, Hyprland, i3, etc.) or prefer manual configuration (use the full path, `~/.local/bin/spawn-at`, if that folder is not on the `PATH` your session starts with):
 - **Clipboard History:** `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
 - **Emoji Picker:** `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --emoji`
 

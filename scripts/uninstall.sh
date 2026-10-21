@@ -159,22 +159,23 @@ if [ -d "$WC_LOCAL" ]; then
 fi
 
 # 3. Prompt for spawn-at removal
+# The copy install.sh manages lives in ~/.local/bin. /usr/local/bin/spawn-at is only there on
+# machines that an earlier installer (or `make install`) put it on. Nothing else is ours: a
+# spawn-at in /usr/bin or elsewhere on the PATH belongs to a package or to you and is never touched.
+SPAWN_AT_USER_BIN="$HOME/.local/bin/spawn-at"
+SPAWN_AT_SYSTEM_BIN="/usr/local/bin/spawn-at"
 SPAWN_AT_BIN=""
-if command -v spawn-at &>/dev/null; then
-    SPAWN_AT_BIN=$(command -v spawn-at)
-elif [ -x "$HOME/.local/bin/spawn-at" ]; then
-    SPAWN_AT_BIN="$HOME/.local/bin/spawn-at"
-elif [ -x "/usr/local/bin/spawn-at" ]; then
-    SPAWN_AT_BIN="/usr/local/bin/spawn-at"
-elif [ -x "/usr/bin/spawn-at" ]; then
-    SPAWN_AT_BIN="/usr/bin/spawn-at"
+if [ -x "$SPAWN_AT_USER_BIN" ]; then
+    SPAWN_AT_BIN="$SPAWN_AT_USER_BIN"
+elif [ -x "$SPAWN_AT_SYSTEM_BIN" ]; then
+    SPAWN_AT_BIN="$SPAWN_AT_SYSTEM_BIN"
 fi
 
 SPAWN_AT_UUID="spawn-at@harsh.local"
 SPAWN_AT_LOCAL_EXT="$HOME/.local/share/gnome-shell/extensions/$SPAWN_AT_UUID"
 SPAWN_AT_SYS_EXT="/usr/share/gnome-shell/extensions/$SPAWN_AT_UUID"
 
-if [ -n "$SPAWN_AT_BIN" ] || [ -d "$SPAWN_AT_LOCAL_EXT" ] || [ -d "$SPAWN_AT_SYS_EXT" ]; then
+if [ -e "$SPAWN_AT_USER_BIN" ] || [ -e "$SPAWN_AT_SYSTEM_BIN" ] || [ -d "$SPAWN_AT_LOCAL_EXT" ] || [ -d "$SPAWN_AT_SYS_EXT" ]; then
     echo ""
     echo -e "${C_CYAN}┌──────────────────────────────────────────────────────────────┐${C_RESET}"
     echo -e "${C_CYAN}│${C_RESET}  ${C_BOLD}Component: spawn-at${C_RESET}                                         ${C_CYAN}│${C_RESET}"
@@ -279,8 +280,13 @@ if [ -n "$SPAWN_AT_BIN" ] || [ -d "$SPAWN_AT_LOCAL_EXT" ] || [ -d "$SPAWN_AT_SYS
         fi
         rm -rf "$SPAWN_AT_LOCAL_EXT"
         $SUDO_CMD rm -rf "$SPAWN_AT_SYS_EXT" 2>/dev/null || true
-        rm -f "$HOME/.local/bin/spawn-at"
-        $SUDO_CMD rm -f "/usr/local/bin/spawn-at" "/usr/bin/spawn-at" 2>/dev/null || true
+        rm -f "$SPAWN_AT_USER_BIN"
+        if [ -e "$SPAWN_AT_SYSTEM_BIN" ] || [ -L "$SPAWN_AT_SYSTEM_BIN" ]; then
+            $SUDO_CMD rm -f "$SPAWN_AT_SYSTEM_BIN" 2>/dev/null || true
+            if [ -e "$SPAWN_AT_SYSTEM_BIN" ] || [ -L "$SPAWN_AT_SYSTEM_BIN" ]; then
+                warn "Could not remove $SPAWN_AT_SYSTEM_BIN (needs sudo). Run: sudo rm $SPAWN_AT_SYSTEM_BIN"
+            fi
+        fi
         rm -rf "$HOME/.config/spawn-at"
         rm -f "$HOME/.config/autostart/spawn-at-autoupdate.desktop"
         rm -f "$HOME/.config/autostart/spawn-at-update-check.desktop"
