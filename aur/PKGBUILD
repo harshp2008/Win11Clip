@@ -2,7 +2,7 @@
 # Packages the .deb from this repository's own GitHub releases. Not published to the AUR from here:
 # the AUR name win11-clipboard-history-bin belongs to the upstream project (gustavosett).
 pkgname=win11-clipboard-history-bin
-pkgver=0.7.3
+pkgver=0.7.4
 pkgrel=1
 pkgdesc="Windows 11-style Clipboard History Manager for Linux"
 arch=('x86_64' 'aarch64')
