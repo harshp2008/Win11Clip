@@ -7,6 +7,7 @@ pub mod config_manager;
 pub mod emoji_manager;
 pub mod focus_manager;
 pub mod gif_manager;
+pub mod ibus_hotkey;
 pub mod input_simulator;
 pub mod paste_sync;
 pub mod permission_checker;

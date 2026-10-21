@@ -32,6 +32,11 @@ fi
 # the install and is never removed here.
 MANIFEST="$HOME/.config/win11-clipboard-history/installer-manifest"
 
+# Where install.sh saved the user's original IBus emoji hotkey (it changes it for Super+.).
+STATE_DIR="$HOME/.local/state/win11clip-installer"
+IBUS_EMOJI_SCHEMA="org.freedesktop.ibus.panel.emoji"
+IBUS_EMOJI_HOTKEY_SAVED="$STATE_DIR/ibus-emoji-hotkey.orig"
+
 # ask_yes_no "question" -> 0 only on an explicit yes; defaults to No, and No when non-interactive.
 ask_yes_no() {
     local reply=""
@@ -39,6 +44,40 @@ ask_yes_no() {
         read -r -p "$1 [y/N] " reply < /dev/tty || true
     fi
     [[ "$reply" =~ ^[Yy] ]]
+}
+
+# Run gsettings as the desktop user: under sudo it is the user owning the session, not root.
+run_user_gsettings() {
+    if [ -n "$SUDO_USER" ]; then
+        sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" gsettings "$@"
+    else
+        gsettings "$@"
+    fi
+}
+
+# Put back the IBus emoji hotkey install.sh removed so Super+. could open Win11Clip's emoji
+# picker. Does nothing when this installer never changed it; on failure the saved value is kept.
+restore_ibus_emoji_hotkey() {
+    [ -f "$IBUS_EMOJI_HOTKEY_SAVED" ] || return 0
+
+    local saved
+    saved=$(cat "$IBUS_EMOJI_HOTKEY_SAVED" 2>/dev/null) || saved=""
+    if [ -z "$saved" ]; then
+        warn "The saved IBus emoji hotkey is empty; leaving the setting alone."
+        return 0
+    fi
+    if ! command -v gsettings &>/dev/null; then
+        warn "gsettings was not found, so the IBus emoji hotkey was not restored. Saved value kept in $IBUS_EMOJI_HOTKEY_SAVED."
+        return 0
+    fi
+
+    if run_user_gsettings set "$IBUS_EMOJI_SCHEMA" hotkey "$saved" 2>/dev/null; then
+        rm -f "$IBUS_EMOJI_HOTKEY_SAVED" 2>/dev/null || true
+        success "Restored the IBus emoji hotkey (Super+.)."
+    else
+        warn "Could not restore the IBus emoji hotkey. Saved value kept in $IBUS_EMOJI_HOTKEY_SAVED."
+    fi
+    return 0
 }
 
 # What this run removed and what it left alone, printed at the end.
@@ -374,6 +413,10 @@ except Exception as e:
 else
     success "Skipped GNOME shortcuts (not on GNOME or gsettings/python3 missing)."
 fi
+
+# install.sh took '<Super>period' out of the IBus emoji hotkey so it would stop clashing with
+# Win11Clip's emoji picker; give the user their original value back before the state dir is cleaned.
+restore_ibus_emoji_hotkey
 
 # 4b. Build tools the installer added for --build (only what the manifest lists)
 if [ -f "$MANIFEST" ]; then
