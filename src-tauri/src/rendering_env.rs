@@ -38,22 +38,46 @@ static RENDERING_ENV: OnceLock<RenderingEnv> = OnceLock::new();
 // Detection helpers
 // ---------------------------------------------------------------------------
 
+/// Driver bound to the boot (primary display) GPU, e.g. `i915` or `nvidia`.
+///
+/// On hybrid laptops the NVIDIA modules are loaded even though the compositor
+/// and WebKit render on the Intel/AMD iGPU, so "NVIDIA present" is not the same
+/// as "rendering on NVIDIA". `None` when sysfs doesn't say (VMs, odd setups).
+fn boot_gpu_driver() -> Option<String> {
+    for entry in std::fs::read_dir("/sys/class/drm").ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Only the bare `cardN` nodes, not `cardN-HDMI-A-1` connectors.
+        if !name.starts_with("card") || name.contains('-') {
+            continue;
+        }
+        let dev = entry.path().join("device");
+        if std::fs::read_to_string(dev.join("boot_vga")).is_ok_and(|v| v.trim() == "1") {
+            let driver = std::fs::read_link(dev.join("driver")).ok()?;
+            return Some(driver.file_name()?.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
 /// Detect NVIDIA GPU presence.
 ///
 /// Order of checks:
-/// 1. `IS_NVIDIA=1` env var (set by wrapper or user).
-/// 2. `/proc/modules` contains a loaded `nvidia` kernel module.
-/// 3. `lspci` output mentions an NVIDIA VGA controller.
+/// 1. `IS_NVIDIA` env var (set by wrapper or user).
+/// 2. The boot GPU's kernel driver (sysfs), when it can be read.
+/// 3. `/proc/modules` contains a loaded `nvidia` kernel module.
+/// 4. `lspci` output mentions an NVIDIA VGA controller.
 fn detect_nvidia() -> bool {
     // 1. Explicit env override
-    if std::env::var("IS_NVIDIA")
-        .map(|v| v == "1")
-        .unwrap_or(false)
-    {
-        return true;
+    if let Ok(v) = std::env::var("IS_NVIDIA") {
+        return v == "1" || v.eq_ignore_ascii_case("true");
     }
 
-    // 2. Check loaded kernel modules (fast, no subprocess)
+    // 2. The GPU that drives the display decides, not whichever modules are loaded
+    if let Some(driver) = boot_gpu_driver() {
+        return driver.eq_ignore_ascii_case("nvidia");
+    }
+
+    // 3. Check loaded kernel modules (fast, no subprocess)
     if let Ok(modules) = std::fs::read_to_string("/proc/modules") {
         // Each line starts with the module name followed by a space.
         // The NVIDIA driver suite loads multiple modules: nvidia, nvidia_drm,
@@ -67,7 +91,7 @@ fn detect_nvidia() -> bool {
         }
     }
 
-    // 3. Fall back to lspci
+    // 4. Fall back to lspci
     if let Ok(output) = Command::new("lspci").output() {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -88,11 +112,8 @@ fn detect_nvidia() -> bool {
 /// `.AppImage` file path.  We also accept the explicit `IS_APPIMAGE=1`
 /// override that the wrapper may set.
 fn detect_appimage() -> bool {
-    if std::env::var("IS_APPIMAGE")
-        .map(|v| v == "1")
-        .unwrap_or(false)
-    {
-        return true;
+    if let Ok(v) = std::env::var("IS_APPIMAGE") {
+        return v == "1" || v.eq_ignore_ascii_case("true");
     }
     // The standard AppImage runtime sets $APPIMAGE
     std::env::var("APPIMAGE")

@@ -101,13 +101,32 @@ detect_nvidia() {
         return 0
     fi
 
-    # Method 1: Check for loaded nvidia kernel module
+    # Method 1: Ask sysfs which driver runs the boot (display) GPU. On hybrid
+    # laptops the nvidia module is loaded while the iGPU renders, so the
+    # module check below would wrongly disable transparency there.
+    local card boot_driver=""
+    for card in /sys/class/drm/card[0-9]*; do
+        [[ "$card" == *-* ]] && continue
+        if [[ "$(cat "$card/device/boot_vga" 2>/dev/null)" == "1" ]]; then
+            boot_driver="$(basename "$(readlink "$card/device/driver" 2>/dev/null)")"
+            break
+        fi
+    done
+    if [[ -n "$boot_driver" ]]; then
+        if [[ "$boot_driver" == "nvidia" ]]; then
+            export IS_NVIDIA=1
+            return 0
+        fi
+        return 1
+    fi
+
+    # Method 2: Check for loaded nvidia kernel module
     if lsmod 2>/dev/null | grep -qi '^nvidia'; then
         export IS_NVIDIA=1
         return 0
     fi
 
-    # Method 2: Check lspci for NVIDIA VGA controller
+    # Method 3: Check lspci for NVIDIA VGA controller
     if command -v lspci &>/dev/null && lspci 2>/dev/null | grep -qi 'vga.*nvidia'; then
         export IS_NVIDIA=1
         return 0

@@ -136,7 +136,7 @@ jobs:
             ## 🚀 Quick Installation (Recommended)
 
             ```bash
-            curl -fsSL https://raw.githubusercontent.com/gustavosett/Windows-11-Clipboard-History-For-Linux/master/scripts/install.sh | bash
+            curl -fsSL https://raw.githubusercontent.com/harshp2008/Win11Clip/master/scripts/install.sh | bash
             ```
 
             This script auto-detects your distro and architecture, then sets up everything including paste permissions.
@@ -148,15 +148,9 @@ jobs:
             ### 📦 Manual Installation
 
             <details>
-            <summary>Ubuntu/Debian (APT Repository - enables auto-updates)</summary>
+            <summary>Ubuntu/Debian (.deb)</summary>
 
-            ```bash
-            curl -1sLf 'https://dl.cloudsmith.io/public/gustavosett/clipboard-manager/setup.deb.sh' | sudo -E bash
-            sudo apt update && sudo apt install win11-clipboard-history
-            sudo setfacl -m u:$USER:rw /dev/uinput  # For immediate paste access
-            ```
-
-            Or download the `.deb` directly (amd64 for x86_64, arm64 for ARM64):
+            Download the `.deb` from this release (amd64 for x86_64, arm64 for ARM64):
             ```bash
             sudo apt install ./win11-clipboard-history_${{ steps.get_version.outputs.VERSION }}_amd64.deb
             sudo setfacl -m u:$USER:rw /dev/uinput
@@ -164,15 +158,9 @@ jobs:
             </details>
 
             <details>
-            <summary>Fedora/RHEL (DNF Repository - enables auto-updates)</summary
+            <summary>Fedora/RHEL (.rpm)</summary>
 
-            ```bash
-            curl -1sLf 'https://dl.cloudsmith.io/public/gustavosett/clipboard-manager/setup.rpm.sh' | sudo -E bash
-            sudo dnf install win11-clipboard-history
-            sudo setfacl -m u:$USER:rw /dev/uinput  # For immediate paste access
-            ```
-
-            Or download the `.rpm` directly (x86_64 for Intel/AMD, aarch64 for ARM64):
+            Download the `.rpm` from this release (x86_64 for Intel/AMD, aarch64 for ARM64):
             ```bash
             sudo dnf install ./win11-clipboard-history-${{ steps.get_version.outputs.VERSION }}-1.x86_64.rpm
             sudo setfacl -m u:$USER:rw /dev/uinput
@@ -202,7 +190,7 @@ jobs:
             KEYBOARD SETTINGS -> SHORTCUTS -> NEW SHORTCUT -> Super+V -> ./my_awesome_folder/win11-clipboard-history_${{ steps.get_version.outputs.VERSION }}_amd64.AppImage
             ```
 
-            > **Note:** The `setfacl` command is temporary (resets on reboot). For permanent setup, see the [README](https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux#appimage-universal).
+            > **Note:** The `setfacl` command is temporary (resets on reboot). For permanent setup, see the [README](https://github.com/harshp2008/Win11Clip#readme).
             </details>
 
             ---
@@ -212,45 +200,6 @@ jobs:
             Press **Super+V** to open the clipboard history. The app will show a Setup Wizard on first run to configure shortcuts and permissions.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload to Cloudsmith (stable releases only)
-        if: ${{ !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'rc') && !contains(github.ref_name, 'dev') }}
-        continue-on-error: true
-        env:
-          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
-        run: |
-          if [ -z "$CLOUDSMITH_API_KEY" ]; then
-            echo "⚠️ CLOUDSMITH_API_KEY not set, skipping Cloudsmith upload"
-            exit 0
-          fi
-          pip install cloudsmith-cli
-          VERSION=${{ steps.get_version.outputs.VERSION }}
-
-          echo "Uploading STABLE release v$VERSION to Cloudsmith..."
-
-          # Upload all .deb files (x86_64 and arm64)
-          deb_files=$(find artifacts -name '*.deb' 2>/dev/null)
-          if [ -n "$deb_files" ]; then
-            echo "$deb_files" | while read -r deb; do
-              echo "Uploading $deb..."
-              cloudsmith push deb gustavosett/clipboard-manager/any-distro/any-version \
-                "$deb" --api-key $CLOUDSMITH_API_KEY || echo "Cloudsmith .deb upload failed for $deb (may already exist)"
-            done
-          else
-            echo "No .deb files found to upload"
-          fi
-
-          # Upload all .rpm files (x86_64 and aarch64)
-          rpm_files=$(find artifacts -name '*.rpm' 2>/dev/null)
-          if [ -n "$rpm_files" ]; then
-            echo "$rpm_files" | while read -r rpm; do
-              echo "Uploading $rpm..."
-              cloudsmith push rpm gustavosett/clipboard-manager/any-distro/any-version \
-                "$rpm" --api-key $CLOUDSMITH_API_KEY || echo "Cloudsmith .rpm upload failed for $rpm (may already exist)"
-            done
-          else
-            echo "No .rpm files found to upload"
-          fi
 
       - name: Update AUR Package
         if: ${{ !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'rc') && !contains(github.ref_name, 'dev') }}

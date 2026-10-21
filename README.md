@@ -58,18 +58,28 @@ To force a local build from source during installation:
 ./scripts/install.sh --build
 ```
 
+The installer needs nothing pre-installed beyond `curl` and `sudo`. By default it installs the prebuilt `.deb` from this repository's latest GitHub release (plus any missing runtime packages via `apt`, asking for `sudo` once). If no usable release exists, or with `--build`, it builds from source: system libraries come from `apt`, while Node.js (nvm) and Rust (rustup) are installed in your home folder without `sudo`, and only if you don't already have them. To see exactly what it would do first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/harshp2008/Win11Clip/master/scripts/install.sh | bash -s -- --dry-run
+```
+
+If it finds an older upstream package or apt source of `gustavosett/Windows-11-Clipboard-History-For-Linux`, it explains and asks before removing anything (default No), and saves a copy under `~/.local/state/win11clip-installer/backup`. `uninstall.sh` removes what the installer added, offers to restore anything the installer removed, and asks before touching shared components (`spawn-at`, `window-calls`) or any build tools it installed.
+
 ---
 
 ## 🧩 Wayland & GNOME Cursor Positioning
 
 Under Wayland, security isolation prevents regular applications from reading global cursor coordinates or moving windows arbitrarily. Win11Clip achieves seamless, sub-pixel cursor positioning on GNOME Wayland via two tightly integrated components:
 
-1. **`spawn-at` CLI Utility:** Queries the mouse position and window coordinates directly via D-Bus, calculates monitor bounds and display offsets, and moves the Win11Clip window dynamically.
+1. **`spawn-at` CLI Utility (version 0.2.3 or newer):** Queries the mouse position and window coordinates directly via D-Bus, calculates monitor bounds and display offsets, and moves the Win11Clip window dynamically. It comes with its own GNOME Shell extension; both must be 0.2.3 or newer, because older ones can place the popup at a stale position after a shortcut press that found the popup already open. The installer bundles 0.2.3 (`bundled-deps/VERSIONS` records the checksum), replaces an older `spawn-at`, never downgrades a newer one, and deploys the extension from that same CLI.
 2. **Patched `window-calls` Extension:** Bundles a hardened version of `window-calls@domandoman.xyz` enhanced with a custom `GetCoordinates` D-Bus endpoint to retrieve pointer positions and monitor geometry safely inside Mutter.
 
 > [!IMPORTANT]
 > **Post-Install Session Restart:**  
-> When installing on **GNOME Wayland for the first time**, you must **log out and log back in** (or restart your session). GNOME Shell only initializes newly installed extension D-Bus interfaces upon starting a fresh user session.
+> When installing on **GNOME Wayland for the first time**, you must **log out and log back in** (or restart your session). GNOME Shell only initializes newly installed extension D-Bus interfaces upon starting a fresh user session. The same applies whenever the installer updates one of the three extensions (`win11-clipboard-bridge`, `window-calls`, `spawn-at`) or `spawn-at` is updated later.
+>
+> One login is enough. About 20 seconds after you log in, a one-time check shows a notification either way: "Clipboard History is ready", or "log out and back in once more" naming what did not load (the details are in `~/.local/state/win11clip-installer/firstrun.log`). The installer also warns up front if an extension does not list your GNOME Shell version, since GNOME then refuses to load it.
 
 ---
 
@@ -142,6 +152,12 @@ sudo setfacl -m u:$USER:rw /dev/uinput
   ```bash
   gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/Windows --method org.gnome.Shell.Extensions.Windows.GetCoordinates
   ```
+- **Popup appears in the wrong place, or `spawn-at` says the extension does not answer:** check that all three extensions are `ACTIVE` and that `spawn-at` is 0.2.3 or newer, then log out and back in once:
+  ```bash
+  spawn-at -V
+  for e in win11-clipboard-bridge@harshp2008.github.com window-calls@domandoman.xyz spawn-at@harsh.local; do gnome-extensions info $e | grep State; done
+  ```
+  `OUT OF DATE` means the extension does not list your GNOME Shell version; logging in again will not fix that.
 - **Window Focus on Wayland:** If focus is not captured immediately:
   ```bash
   gnome-extensions enable win11-clipboard-bridge@harshp2008.github.com

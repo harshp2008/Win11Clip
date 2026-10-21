@@ -26,7 +26,7 @@ use win11_clipboard_history_lib::input_simulator::simulate_paste_keystroke;
 use win11_clipboard_history_lib::permission_checker;
 use win11_clipboard_history_lib::rendering_env;
 use win11_clipboard_history_lib::session::is_wayland;
-use win11_clipboard_history_lib::shortcut_setup;
+use win11_clipboard_history_lib::shortcut_manager;
 use win11_clipboard_history_lib::theme_manager::{self, ThemeInfo};
 use win11_clipboard_history_lib::user_settings::{UserSettings, UserSettingsManager};
 
@@ -423,7 +423,7 @@ impl WindowController {
                     }
                 }
 
-                Self::position_and_show(&window, app);
+                Self::position_and_show(&window, app, true);
             }
         }
     }
@@ -468,7 +468,9 @@ impl WindowController {
                     }
                 }
 
-                Self::position_and_show(&window, app);
+                // Forwarded shortcut: `spawn-at` already placed and clamped the new window, so
+                // do not snap it again (the snap has no screen-edge clamp).
+                Self::position_and_show(&window, app, false);
         }
     }
 
@@ -484,7 +486,7 @@ impl WindowController {
         }
     }
 
-    fn position_and_show(window: &WebviewWindow, app: &AppHandle) {
+    fn position_and_show(window: &WebviewWindow, app: &AppHandle, snap_to_cursor: bool) {
         let state = app.state::<AppState>();
 
         if is_wayland() {
@@ -510,29 +512,6 @@ impl WindowController {
                         tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
                         if let Err(e) = gnome_extension_force_pin() {
                             eprintln!("[FocusManager] ForcePin D-Bus call failed: {}", e);
-                        }
-                    }
-                });
-
-                tauri::async_runtime::spawn(async move {
-                    for _ in 0..5 {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-                        if std::process::Command::new("gdbus")
-                            .args([
-                                "call",
-                                "--session",
-                                "--dest",
-                                "org.gnome.Shell",
-                                "--object-path",
-                                "/org/gnome/Shell/Extensions/Windows",
-                                "--method",
-                                "org.gnome.Shell.Extensions.Windows.Focus",
-                                "\"win11-clipboard-history\"",
-                            ])
-                            .output()
-                            .is_ok_and(|out| out.status.success())
-                        {
-                            break;
                         }
                     }
                 });
@@ -570,7 +549,9 @@ impl WindowController {
                         }
                         // Steal focus explicitly via window-calls
                         let _ = win11_clipboard_history_lib::focus_manager::wayland_activate_window_id(cb_id);
-                        win11_clipboard_history_lib::focus_manager::wayland_snap_to_cursor(cb_id);
+                        if snap_to_cursor {
+                            win11_clipboard_history_lib::focus_manager::wayland_snap_to_cursor(cb_id);
+                        }
                         break;
                     }
                 }
@@ -1135,6 +1116,18 @@ fn main() {
                     if started_in_background && !initial_show_allowed {
                         println!("[WindowController] Background mode: intercepted focus, hiding window");
                         let _ = w_clone.hide();
+                    } else if is_wayland() && UserSettingsManager::new().load().always_on_top {
+                        // The window the app opens with at launch is shown by GTK, not by
+                        // position_and_show, so it would otherwise never be raised above others.
+                        std::thread::spawn(|| {
+                            for _ in 0..15 {
+                                std::thread::sleep(std::time::Duration::from_millis(40));
+                                if let Ok(cb_id) = wayland_get_clipboard_window_id() {
+                                    let _ = wayland_set_keep_above(cb_id, true);
+                                    break;
+                                }
+                            }
+                        });
                     }
                 }
                 WindowEvent::Focused(false) => {
@@ -1294,11 +1287,11 @@ fn main() {
             permission_checker::is_first_run,
             permission_checker::mark_first_run_complete,
             permission_checker::reset_first_run,
-            shortcut_setup::get_desktop_environment,
-            shortcut_setup::register_de_shortcut,
-            shortcut_setup::check_shortcut_tools,
-            shortcut_setup::detect_conflicts,
-            shortcut_setup::resolve_conflicts,
+            shortcut_manager::get_desktop_environment,
+            shortcut_manager::register_de_shortcut,
+            shortcut_manager::check_shortcut_tools,
+            shortcut_manager::detect_conflicts,
+            shortcut_manager::resolve_conflicts,
             autostart_manager::autostart_enable,
             autostart_manager::autostart_disable,
             autostart_manager::autostart_is_enabled,

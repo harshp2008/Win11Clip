@@ -28,6 +28,23 @@ if [ "$EUID" -ne 0 ]; then
     SUDO_CMD="sudo"
 fi
 
+# Things install.sh recorded as added by itself (build tools). Anything not listed predates
+# the install and is never removed here.
+MANIFEST="$HOME/.config/win11-clipboard-history/installer-manifest"
+
+# ask_yes_no "question" -> 0 only on an explicit yes; defaults to No, and No when non-interactive.
+ask_yes_no() {
+    local reply=""
+    if ( : < /dev/tty ) 2>/dev/null; then
+        read -r -p "$1 [y/N] " reply < /dev/tty || true
+    fi
+    [[ "$reply" =~ ^[Yy] ]]
+}
+
+# What this run removed and what it left alone, printed at the end.
+SUMMARY_REMOVED=()
+SUMMARY_KEPT=()
+
 echo ""
 echo "╔═══════════════════════════════════════════════════════════╗"
 echo "║     Win11 Clipboard History - Uninstaller                 ║"
@@ -50,51 +67,146 @@ rm -rf "$HOME/.local/share/gnome-shell/extensions/$BRIDGE_UUID"
 $SUDO_CMD rm -rf "/usr/share/gnome-shell/extensions/$BRIDGE_UUID" 2>/dev/null || true
 success "win11-clipboard-bridge removed."
 
-# 3. Clean spawn-at extension and runtime
-log "Removing spawn-at extension and configuration..."
-SPAWN_AT_UUID="spawn-at@harsh.local"
-if command -v gnome-extensions &>/dev/null; then
-    gnome-extensions disable "$SPAWN_AT_UUID" 2>/dev/null || true
+# 2b. Things install.sh removed with your consent (see its backups), and old upstream sources
+BACKUP_DIR="$HOME/.local/state/win11clip-installer/backup"
+REMOVED_SOURCES=()
+REMOVED_PACKAGE=""
+RESTORED_SOURCES=false
+if [ -f "$MANIFEST" ]; then
+    while IFS= read -r line; do REMOVED_SOURCES+=("${line#removed-source:}"); done < <(grep '^removed-source:' "$MANIFEST")
+    REMOVED_PACKAGE=$(sed -n 's/^removed-package://p' "$MANIFEST" | head -n 1)
 fi
-rm -rf "$HOME/.local/share/gnome-shell/extensions/$SPAWN_AT_UUID"
-$SUDO_CMD rm -rf "/usr/share/gnome-shell/extensions/$SPAWN_AT_UUID" 2>/dev/null || true
-rm -rf "$HOME/.config/spawn-at"
-success "spawn-at extension and configuration removed."
 
-# 4. Prompt for window-calls
+if [ ${#REMOVED_SOURCES[@]} -gt 0 ]; then
+    echo ""
+    echo "install.sh removed this upstream package source from your system (a copy was saved):"
+    printf '      %s\n' "${REMOVED_SOURCES[@]}"
+    if ask_yes_no "Restore it? It makes apt offer gustavosett's upstream build again."; then
+        for f in "${REMOVED_SOURCES[@]}"; do
+            if [ -f "$BACKUP_DIR/apt-source$f" ]; then
+                $SUDO_CMD install -Dm644 "$BACKUP_DIR/apt-source$f" "$f" || warn "Could not restore $f (copy kept at $BACKUP_DIR/apt-source$f)."
+            else
+                warn "No backup found for $f."
+            fi
+        done
+        command -v apt-get &>/dev/null && { $SUDO_CMD apt-get update -qq 2>/dev/null || true; }
+        RESTORED_SOURCES=true
+        success "Restored the upstream package source."
+    else
+        success "Left it removed. The saved copy stays in $BACKUP_DIR/apt-source."
+    fi
+fi
+
+if [ -n "$REMOVED_PACKAGE" ]; then
+    echo ""
+    warn "install.sh removed the apt package ${REMOVED_PACKAGE%%=*} ${REMOVED_PACKAGE#*=} so that its source build would run."
+    echo "    It is not reinstalled automatically. A copy of its files is in $BACKUP_DIR/package."
+    echo "    To get that version back (needs the upstream source above): sudo apt install ${REMOVED_PACKAGE}"
+fi
+
+# Any other leftover upstream source (older installers added it without recording it).
+LEGACY_SOURCES=()
+for f in /etc/apt/sources.list.d/gustavosett-clipboard-manager.list \
+         /usr/share/keyrings/gustavosett-clipboard-manager-archive-keyring.gpg \
+         /etc/yum.repos.d/gustavosett-clipboard-manager*.repo \
+         /etc/zypp/repos.d/gustavosett-clipboard-manager*.repo; do
+    [ -f "$f" ] && LEGACY_SOURCES+=("$f")
+done
+if [ "$RESTORED_SOURCES" != true ] && [ ${#LEGACY_SOURCES[@]} -gt 0 ]; then
+    echo ""
+    echo "An old upstream package source (added by an older installer) is still on this system:"
+    printf '      %s\n' "${LEGACY_SOURCES[@]}"
+    if ask_yes_no "Remove it? Choose No if you use gustavosett's upstream package on purpose."; then
+        $SUDO_CMD rm -f "${LEGACY_SOURCES[@]}" || warn "Could not remove them; run: sudo rm -f ${LEGACY_SOURCES[*]}"
+        command -v apt-get &>/dev/null && { $SUDO_CMD apt-get update -qq 2>/dev/null || true; }
+        success "Old upstream package source removed."
+    else
+        success "Kept the old upstream package source."
+    fi
+fi
+
+# 2c. window-calls (patched copy installed by install.sh; other GNOME tools may rely on it)
 WC_UUID="window-calls@domandoman.xyz"
 WC_LOCAL="$HOME/.local/share/gnome-shell/extensions/$WC_UUID"
-WC_SYS="/usr/share/gnome-shell/extensions/$WC_UUID"
+# Copies of a window-calls that was already installed before install.sh replaced it (oldest first;
+# the oldest is the one you had originally).
+# Found in the backup folder itself (not the manifest, which this script deletes), so it also
+# works on a later run.
+WC_BACKUPS=()
+for d in "$BACKUP_DIR"/window-calls/*/; do
+    [ -d "$d" ] && WC_BACKUPS+=("${d%/}")
+done
+if [ -d "$WC_LOCAL" ]; then
+    echo ""
+    echo "window-calls is a shared GNOME extension that install.sh deployed (patched build)."
+    [ ${#WC_BACKUPS[@]} -gt 0 ] && echo "    install.sh replaced a window-calls you already had; it saved your copy in ${WC_BACKUPS[0]}"
+    if ask_yes_no "Remove window-calls too? Choose No if other tools use it."; then
+        command -v gnome-extensions &>/dev/null && { gnome-extensions disable "$WC_UUID" 2>/dev/null || true; }
+        rm -rf "$WC_LOCAL"
+        if [ ${#WC_BACKUPS[@]} -gt 0 ]; then
+            mkdir -p "$WC_LOCAL" && cp -a "${WC_BACKUPS[0]}/." "$WC_LOCAL/" \
+                && { success "window-calls removed and your previous copy restored from ${WC_BACKUPS[0]}."; SUMMARY_REMOVED+=("window-calls (patched copy; your previous one was restored)"); } \
+                || { warn "Removed the patched window-calls but could not restore your copy; it is still in ${WC_BACKUPS[0]}."; SUMMARY_REMOVED+=("window-calls (restore failed, copy kept in ${WC_BACKUPS[0]})"); }
+        else
+            success "window-calls removed."
+            SUMMARY_REMOVED+=("window-calls")
+        fi
+    else
+        success "Kept window-calls."
+        SUMMARY_KEPT+=("window-calls")
+        [ ${#WC_BACKUPS[@]} -gt 0 ] && echo "    Your earlier copy stays saved in ${WC_BACKUPS[0]} (it was replaced by the patched build)."
+    fi
+fi
 
-if [ -d "$WC_LOCAL" ] || [ -d "$WC_SYS" ]; then
+# 3. Prompt for spawn-at removal
+SPAWN_AT_BIN=""
+if command -v spawn-at &>/dev/null; then
+    SPAWN_AT_BIN=$(command -v spawn-at)
+elif [ -x "$HOME/.local/bin/spawn-at" ]; then
+    SPAWN_AT_BIN="$HOME/.local/bin/spawn-at"
+elif [ -x "/usr/local/bin/spawn-at" ]; then
+    SPAWN_AT_BIN="/usr/local/bin/spawn-at"
+elif [ -x "/usr/bin/spawn-at" ]; then
+    SPAWN_AT_BIN="/usr/bin/spawn-at"
+fi
+
+SPAWN_AT_UUID="spawn-at@harsh.local"
+SPAWN_AT_LOCAL_EXT="$HOME/.local/share/gnome-shell/extensions/$SPAWN_AT_UUID"
+SPAWN_AT_SYS_EXT="/usr/share/gnome-shell/extensions/$SPAWN_AT_UUID"
+
+if [ -n "$SPAWN_AT_BIN" ] || [ -d "$SPAWN_AT_LOCAL_EXT" ] || [ -d "$SPAWN_AT_SYS_EXT" ]; then
     echo ""
     echo -e "${C_CYAN}┌──────────────────────────────────────────────────────────────┐${C_RESET}"
-    echo -e "${C_CYAN}│${C_RESET}  ${C_BOLD}Component: window-calls extension${C_RESET}                           ${C_CYAN}│${C_RESET}"
-    echo -e "${C_CYAN}│${C_RESET}  This extension may be used by other GNOME tools.            ${C_CYAN}│${C_RESET}"
+    echo -e "${C_CYAN}│${C_RESET}  ${C_BOLD}Component: spawn-at${C_RESET}                                         ${C_CYAN}│${C_RESET}"
+    echo -e "${C_CYAN}│${C_RESET}  This tool may be used by other applications or shortcuts.   ${C_CYAN}│${C_RESET}"
     echo -e "${C_CYAN}└──────────────────────────────────────────────────────────────┘${C_RESET}"
     echo ""
 
-    prompt_window_calls_removal() {
+    prompt_spawn_at_removal() {
         local options=(
-            "Keep window-calls (Recommended if used by other tools)"
-            "Remove window-calls"
+            "Keep spawn-at (Recommended if used by other tools)"
+            "Remove spawn-at"
         )
         local selected=0
         local count=${#options[@]}
 
         # Ensure input is read from /dev/tty if stdin is piped (e.g. curl | bash)
         local tty_in=""
-        if [ -r /dev/tty ]; then
+        if ( : < /dev/tty ) 2>/dev/null; then
             exec 3</dev/tty
             tty_in=3
         elif [ ! -t 0 ]; then
-            echo -e "${C_YELLOW}[!] Non-interactive session. Keeping window-calls.${C_RESET}"
+            echo -e "${C_YELLOW}[!] Non-interactive session. Keeping spawn-at.${C_RESET}"
             return 0
         fi
 
         # Hide cursor
         echo -ne "\033[?25l"
         trap 'echo -ne "\033[?25h"' EXIT INT TERM
+
+        # Throw away keys typed during the earlier prompts (an arrow key would otherwise move the
+        # cursor off "Keep" before the menu is even drawn).
+        while IFS= read -u "${tty_in:-0}" -rsn1 -t 0.05 _; do :; done
 
         print_menu() {
             for i in "${!options[@]}"; do
@@ -149,19 +261,34 @@ if [ -d "$WC_LOCAL" ] || [ -d "$WC_SYS" ]; then
     }
 
     selected=0
-    prompt_window_calls_removal || selected=$?
+    prompt_spawn_at_removal || selected=$?
     echo ""
 
+    if [ "$selected" -eq 1 ] && ! ask_yes_no "Really remove spawn-at? Other shortcuts that use it will stop working."; then
+        selected=0
+    fi
+
     if [ "$selected" -eq 1 ]; then
-        log "Removing window-calls..."
-        if command -v gnome-extensions &>/dev/null; then
-            gnome-extensions disable "$WC_UUID" 2>/dev/null || true
+        log "Removing spawn-at..."
+        if [ -n "$SPAWN_AT_BIN" ] && [ -x "$SPAWN_AT_BIN" ]; then
+            "$SPAWN_AT_BIN" uninstall --headless --gnome-delete-files true 2>/dev/null || true
         fi
-        rm -rf "$WC_LOCAL"
-        $SUDO_CMD rm -rf "$WC_SYS" 2>/dev/null || true
-        success "window-calls removed."
+
+        if command -v gnome-extensions &>/dev/null; then
+            gnome-extensions disable "$SPAWN_AT_UUID" 2>/dev/null || true
+        fi
+        rm -rf "$SPAWN_AT_LOCAL_EXT"
+        $SUDO_CMD rm -rf "$SPAWN_AT_SYS_EXT" 2>/dev/null || true
+        rm -f "$HOME/.local/bin/spawn-at"
+        $SUDO_CMD rm -f "/usr/local/bin/spawn-at" "/usr/bin/spawn-at" 2>/dev/null || true
+        rm -rf "$HOME/.config/spawn-at"
+        rm -f "$HOME/.config/autostart/spawn-at-autoupdate.desktop"
+        rm -f "$HOME/.config/autostart/spawn-at-update-check.desktop"
+        success "spawn-at removed."
+        SUMMARY_REMOVED+=("spawn-at (binary, extension, login entries)")
     else
-        success "Kept window-calls extension."
+        success "Kept spawn-at."
+        SUMMARY_KEPT+=("spawn-at")
     fi
 fi
 
@@ -213,32 +340,83 @@ else
     success "Skipped GNOME shortcuts (not on GNOME or gsettings/python3 missing)."
 fi
 
+# 4b. Build tools the installer added for --build (only what the manifest lists)
+if [ -f "$MANIFEST" ]; then
+    BUILD_PKGS=$(sed -n 's/^apt-build://p' "$MANIFEST" | tr '\n' ' ')
+    if [ -n "${BUILD_PKGS// /}" ]; then
+        echo ""
+        echo "install.sh installed these build packages (they were not on your system before):"
+        echo "  $BUILD_PKGS"
+        if ask_yes_no "Remove them with apt? apt will show what else it would remove and ask first."; then
+            # Not -y on purpose: apt lists dependents and asks, so nothing you rely on goes silently.
+            $SUDO_CMD apt-get remove $BUILD_PKGS < /dev/tty || warn "Skipped. Remove them later with: sudo apt remove $BUILD_PKGS"
+        else
+            success "Kept the build packages. To remove them later: sudo apt remove $BUILD_PKGS"
+        fi
+    fi
+    if grep -qx "nvm-installed" "$MANIFEST" && [ -d "$HOME/.nvm" ]; then
+        if ask_yes_no "Remove ~/.nvm (Node.js installed by install.sh)?"; then rm -rf "$HOME/.nvm"; success "Removed ~/.nvm."; else success "Kept ~/.nvm (remove later with: rm -rf ~/.nvm)"; fi
+    fi
+    if grep -qx "rustup-installed" "$MANIFEST" && [ -d "$HOME/.rustup" ]; then
+        if ask_yes_no "Remove ~/.rustup and ~/.cargo (Rust installed by install.sh)?"; then rm -rf "$HOME/.rustup" "$HOME/.cargo"; success "Removed ~/.rustup and ~/.cargo."; else success "Kept ~/.rustup and ~/.cargo (remove later with: rm -rf ~/.rustup ~/.cargo)"; fi
+    fi
+fi
+
 # 5. Clean Binaries, Config, and Package
 log "Cleaning configuration, packages, and binaries..."
-# Gracefully invoke spawn-at uninstaller if available
-if command -v spawn-at >/dev/null 2>&1 || [ -x "$HOME/.local/bin/spawn-at" ] || [ -x "/usr/local/bin/spawn-at" ]; then
-    spawn_bin="$(command -v spawn-at || echo "$HOME/.local/bin/spawn-at")"
-    [ ! -x "$spawn_bin" ] && spawn_bin="/usr/local/bin/spawn-at"
-    "$spawn_bin" uninstall --headless 2>/dev/null || true
+
+# The app can be installed as a system package (apt / dnf / pacman). Removing it deletes the app
+# itself, so it is asked first: default No, and No when there is no terminal.
+PKG_MANAGER=""; PKG_VERSION=""
+if command -v apt-get &>/dev/null && dpkg -s win11-clipboard-history >/dev/null 2>&1; then
+    PKG_MANAGER="apt"; PKG_VERSION=$(dpkg-query -W -f='${Version}' win11-clipboard-history 2>/dev/null)
+elif command -v dnf &>/dev/null && rpm -q win11-clipboard-history >/dev/null 2>&1; then
+    PKG_MANAGER="dnf"; PKG_VERSION=$(rpm -q --qf '%{VERSION}' win11-clipboard-history 2>/dev/null)
+elif command -v pacman &>/dev/null && pacman -Qi win11-clipboard-history &>/dev/null; then
+    PKG_MANAGER="pacman"; PKG_VERSION=$(pacman -Q win11-clipboard-history 2>/dev/null | awk '{print $2}')
 fi
-# Package manager (APT / RPM / Pacman / AppImage)
-if command -v apt-get &>/dev/null && dpkg -l | grep -q win11-clipboard-history 2>/dev/null; then
-    $SUDO_CMD apt-get remove -y win11-clipboard-history 2>/dev/null || true
-elif command -v dnf &>/dev/null && rpm -qa | grep -q win11-clipboard-history 2>/dev/null; then
-    $SUDO_CMD dnf remove -y win11-clipboard-history 2>/dev/null || true
-elif command -v pacman &>/dev/null && pacman -Qs win11-clipboard-history &>/dev/null; then
-    $SUDO_CMD pacman -Rns --noconfirm win11-clipboard-history 2>/dev/null || true
+PACKAGE_KEPT=false
+if [ -n "$PKG_MANAGER" ]; then
+    echo ""
+    echo "The Win11Clip app is installed as a system package: win11-clipboard-history $PKG_VERSION ($PKG_MANAGER)."
+    echo "    Removing it deletes the app from /usr. Your clipboard history (~/.local/share) is not touched."
+    if ask_yes_no "Remove the package win11-clipboard-history?"; then
+        case "$PKG_MANAGER" in
+            apt)    PKG_REMOVE=(apt-get remove -y win11-clipboard-history) ;;
+            dnf)    PKG_REMOVE=(dnf remove -y win11-clipboard-history) ;;
+            pacman) PKG_REMOVE=(pacman -Rns --noconfirm win11-clipboard-history) ;;
+        esac
+        if $SUDO_CMD "${PKG_REMOVE[@]}"; then
+            success "Removed the package win11-clipboard-history $PKG_VERSION."
+            SUMMARY_REMOVED+=("package win11-clipboard-history $PKG_VERSION")
+        else
+            warn "Could not remove the package. Run it yourself: sudo ${PKG_REMOVE[*]}"
+            PACKAGE_KEPT=true
+            SUMMARY_KEPT+=("package win11-clipboard-history $PKG_VERSION (removal failed)")
+        fi
+    else
+        PACKAGE_KEPT=true
+        success "Kept the package. Remove it later with: sudo ${PKG_MANAGER/apt/apt-get} remove win11-clipboard-history"
+        SUMMARY_KEPT+=("package win11-clipboard-history $PKG_VERSION (app files in /usr)")
+    fi
 fi
+
+# True for a file that belongs to the package we just decided to keep: those are left alone.
+owned_by_kept_package() {
+    [ "$PACKAGE_KEPT" = true ] || return 1
+    case "$PKG_MANAGER" in
+        apt) dpkg -S "$1" 2>/dev/null | grep -q '^win11-clipboard-history' ;;
+        *) case "$1" in /usr/local/*) return 1 ;; *) return 0 ;; esac ;;
+    esac
+}
 
 # AppImage and user-local files
 rm -f "$HOME/.local/bin/win11-clipboard-history.AppImage"
 rm -f "$HOME/.local/bin/win11-clipboard-history"
-rm -f "$HOME/.local/bin/spawn-at"
 rm -f "$HOME/.local/share/applications/win11-clipboard-history.desktop"
 rm -f "$HOME/.config/autostart/win11clip-firstrun.desktop"
+rm -f "$HOME/.local/state/win11clip-installer/firstrun.sh" "$HOME/.local/state/win11clip-installer/firstrun.log" "$HOME/.local/state/win11clip-installer/firstrun.tries"
 rm -f "$HOME/.config/autostart/win11-clipboard-history.desktop"
-rm -f "$HOME/.config/autostart/spawn-at-autoupdate.desktop"
-rm -f "$HOME/.config/autostart/spawn-at-update-check.desktop"
 rm -rf "$HOME/.config/win11-clipboard-history"
 
 # System binaries, desktop files, and utilities
@@ -247,11 +425,15 @@ for target in \
     "/usr/bin/win11-clipboard-history-bin" \
     "/usr/local/bin/win11-clipboard-history" \
     "/usr/local/bin/win11-clipboard-history-bin" \
-    "/usr/local/bin/spawn-at" \
     "/usr/local/bin/win11-clipboard-uninstall" \
     "/usr/share/applications/win11-clipboard-history.desktop" \
-    "/usr/local/share/applications/win11-clipboard-history.desktop"; do
+    "/usr/local/share/applications/win11-clipboard-history.desktop" \
+    "/usr/local/share/icons/hicolor/128x128/apps/win11-clipboard-history.png" \
+    "/usr/local/share/icons/hicolor/256x256/apps/win11-clipboard-history.png" \
+    "/etc/udev/rules.d/99-win11-clipboard-input.rules" \
+    "/etc/modules-load.d/win11-clipboard.conf"; do
     if [ -e "$target" ] || [ -L "$target" ]; then
+        if owned_by_kept_package "$target"; then continue; fi
         $SUDO_CMD rm -f "$target"
         if [ -e "$target" ] || [ -L "$target" ]; then
             error "Failed to remove system file: $target"
@@ -259,10 +441,31 @@ for target in \
     fi
 done
 
+# Where `make install` (the --build path) puts the app binary
+$SUDO_CMD rm -rf "/usr/local/lib/win11-clipboard-history"
+
 success "Configuration and binaries removed."
+if [ -d "$BACKUP_DIR" ]; then
+    echo "    Backups of what install.sh removed are kept in $BACKUP_DIR"
+    echo "    (delete them when you no longer need them: rm -rf ~/.local/state/win11clip-installer)"
+fi
+
+# What was removed and what was left alone
+echo ""
+if [ ${#SUMMARY_REMOVED[@]} -gt 0 ]; then
+    echo "Removed:"; printf '  - %s\n' "${SUMMARY_REMOVED[@]}"
+fi
+if [ ${#SUMMARY_KEPT[@]} -gt 0 ]; then
+    echo "Kept (you chose to, or it could not be removed):"; printf '  - %s\n' "${SUMMARY_KEPT[@]}"
+fi
 
 # Display completion message
 echo -e "\n${BLUE}┌──────────────────────────────────────────────────────────────┐${NC}"
+if [ "$PACKAGE_KEPT" = true ]; then
+echo -e "${BLUE}│${NC}  ${YELLOW}! Partly uninstalled.${NC}                                       ${BLUE}│${NC}"
+echo -e "${BLUE}│${NC}  The app package may still be installed (kept or failed).    ${BLUE}│${NC}"
+else
 echo -e "${BLUE}│${NC}  ${GREEN}✓ Uninstallation Complete!${NC}                                  ${BLUE}│${NC}"
 echo -e "${BLUE}│${NC}  Win11 Clipboard History has been removed.                   ${BLUE}│${NC}"
+fi
 echo -e "${BLUE}└──────────────────────────────────────────────────────────────┘${NC}\n"

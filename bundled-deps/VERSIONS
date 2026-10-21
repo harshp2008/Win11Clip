@@ -1,0 +1,15 @@
+# Third-party files shipped in this directory. scripts/install.sh checks the sha256 of
+# bin/spawn-at against this file before installing it. Columns: name version sha256 path
+# To bump spawn-at: download the release asset, check it with its published digest, copy the
+# ./spawn-at from the tarball here, run `bundled-deps/bin/spawn-at -V` (must print the version, not
+# DEV BUILD), then update the line below.
+#
+# spawn-at: https://github.com/harshp2008/spawn-at/releases/tag/v0.2.3
+#   asset spawn-at-x86_64-unknown-linux-gnu.tar.gz, sha256 60183392c273ea05216b6754f9720705107f595d0059fd6a3b5792f6315ef630
+#   (matches the digest GitHub shows for the asset); the sha256 below is of the ./spawn-at inside it.
+#   x86_64 only: on other CPUs install.sh falls back to the official installer.
+spawn-at 0.2.3 2e045e865c7bd96c1603612c56b2b5eb24e917c0226a10144dabcc006844e9be bin/spawn-at
+#
+# window-calls: https://github.com/ickyicky/window-calls with a GetCoordinates D-Bus method added
+# (the "version" in metadata.json is upstream's extension version number).
+window-calls 21 49b9ac2cdad4ebe5a16805e7366fcbdcf3220098e1a6782c71923c188c3b6c51 extensions/window-calls@domandoman.xyz/extension.js

@@ -265,8 +265,14 @@ install: install-extension enable-extension
 	install -Dm755 src-tauri/target/release/$(APP_NAME)-bin $(DESTDIR)$(LIBDIR)/$(APP_NAME)/$(APP_NAME)-bin
 	@# Install wrapper script to bin
 	install -Dm755 src-tauri/bundle/linux/wrapper.sh $(DESTDIR)$(BINDIR)/$(APP_NAME)
-	@# Install spawn-at utility
-	install -Dm755 bundled-deps/bin/spawn-at $(DESTDIR)$(BINDIR)/spawn-at
+	@# Install spawn-at utility, unless a newer one is already there (never downgrade)
+	@bundled=$$(bundled-deps/bin/spawn-at -V 2>/dev/null | sed -n '1s/^spawn-at //p'); \
+	existing=$$($(DESTDIR)$(BINDIR)/spawn-at -V 2>/dev/null | sed -n '1s/^spawn-at //p'); \
+	if [ -n "$$bundled" ] && [ -n "$$existing" ] && [ "$$(printf '%s\n%s\n' "$$existing" "$$bundled" | sort -V | tail -n 1)" = "$$existing" ]; then \
+		echo "Keeping spawn-at $$existing already installed (bundled is $$bundled)"; \
+	else \
+		install -Dm755 bundled-deps/bin/spawn-at $(DESTDIR)$(BINDIR)/spawn-at; \
+	fi
 	@# Set executable permissions
 	chmod +x $(DESTDIR)$(BINDIR)/$(APP_NAME)
 	@if [ -d "$(DESTDIR)/usr/bin" ]; then ln -sf $(DESTDIR)$(BINDIR)/$(APP_NAME) $(DESTDIR)/usr/bin/$(APP_NAME); fi
@@ -303,11 +309,10 @@ install: install-extension enable-extension
 	install -Dm644 src-tauri/bundle/linux/$(APP_NAME).desktop $(DESTDIR)$(DATADIR)/applications/
 	@update-desktop-database $(DESTDIR)$(DATADIR)/applications 2>/dev/null || true
 	@gtk-update-icon-cache -f -t $(DESTDIR)$(DATADIR)/icons/hicolor 2>/dev/null || true
-	@# Configure spawn-at runtime and auto-update on login (only on live system, not in DESTDIR/fakeroot)
+	@# Configure spawn-at auto-update on login (only on live system, not in DESTDIR/fakeroot).
+	@# `spawn-at install` is deliberately not run here: as root it only fills /root (a root-owned copy
+	@# of the binary and an extension nobody loads). scripts/install.sh deploys the extension as the user.
 	@if [ -z "$$(printf '%s' "$(DESTDIR)")" ]; then \
-		if command -v spawn-at >/dev/null 2>&1; then \
-			spawn-at install --headless --yes --no-action 2>/dev/null || true; \
-		fi; \
 		if [ -n "$$SUDO_USER" ]; then \
 			user_home=$$(getent passwd $$SUDO_USER | cut -d: -f6); \
 			mkdir -p "$$user_home/.config/autostart"; \

@@ -12,12 +12,9 @@ pub mod paste_sync;
 pub mod permission_checker;
 pub mod rendering_env;
 pub mod session;
-pub mod shortcut_conflict_detector;
-pub mod shortcut_setup;
+pub mod shortcut_manager;
 pub mod theme_manager;
 pub mod user_settings;
-
-pub mod linux_shortcut_manager;
 
 pub use clipboard_manager::{ClipboardContent, ClipboardItem, ClipboardManager};
 pub use config_manager::ConfigManager;
@@ -32,12 +29,10 @@ pub use permission_checker::{
 };
 pub use rendering_env::{get_rendering_env, get_rendering_environment, RenderingEnv};
 pub use session::{get_session_type, is_wayland, is_x11, SessionType};
-pub use shortcut_conflict_detector::{
-    auto_resolve_conflicts, detect_shortcut_conflicts, ConflictDetectionResult, ShortcutConflict,
-};
-pub use shortcut_setup::{
-    check_shortcut_tools, detect_conflicts, get_desktop_environment, register_de_shortcut,
-    resolve_conflicts, ShortcutToolsStatus,
+pub use shortcut_manager::{
+    auto_resolve_conflicts, check_shortcut_tools, detect_conflicts, detect_shortcut_conflicts,
+    get_desktop_environment, register_de_shortcut, register_global_shortcut, resolve_conflicts,
+    unregister_global_shortcut, ConflictDetectionResult, ShortcutConflict, ShortcutToolsStatus,
 };
 pub use theme_manager::{
     clear_theme_cache, get_system_color_scheme, is_event_listener_running, start_theme_listener,

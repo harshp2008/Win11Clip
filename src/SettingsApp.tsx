@@ -798,8 +798,8 @@ function SettingsApp() {
                     isDark ? 'text-yellow-400/70' : 'text-yellow-700'
                   )}
                 >
-                  Transparency and rounded window corners have been automatically disabled to
-                  prevent rendering artefacts.
+                  Transparency has been automatically disabled to prevent rendering
+                  artefacts on this system.
                 </p>
               </div>
             </div>
