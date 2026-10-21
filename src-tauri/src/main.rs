@@ -513,29 +513,6 @@ impl WindowController {
                         }
                     }
                 });
-
-                tauri::async_runtime::spawn(async move {
-                    for _ in 0..5 {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-                        if std::process::Command::new("gdbus")
-                            .args([
-                                "call",
-                                "--session",
-                                "--dest",
-                                "org.gnome.Shell",
-                                "--object-path",
-                                "/org/gnome/Shell/Extensions/Windows",
-                                "--method",
-                                "org.gnome.Shell.Extensions.Windows.Focus",
-                                "\"win11-clipboard-history\"",
-                            ])
-                            .output()
-                            .is_ok_and(|out| out.status.success())
-                        {
-                            break;
-                        }
-                    }
-                });
             }
         } else {
             let _ = window.show();
@@ -1135,6 +1112,18 @@ fn main() {
                     if started_in_background && !initial_show_allowed {
                         println!("[WindowController] Background mode: intercepted focus, hiding window");
                         let _ = w_clone.hide();
+                    } else if is_wayland() && UserSettingsManager::new().load().always_on_top {
+                        // The window the app opens with at launch is shown by GTK, not by
+                        // position_and_show, so it would otherwise never be raised above others.
+                        std::thread::spawn(|| {
+                            for _ in 0..15 {
+                                std::thread::sleep(std::time::Duration::from_millis(40));
+                                if let Ok(cb_id) = wayland_get_clipboard_window_id() {
+                                    let _ = wayland_set_keep_above(cb_id, true);
+                                    break;
+                                }
+                            }
+                        });
                     }
                 }
                 WindowEvent::Focused(false) => {

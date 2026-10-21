@@ -688,11 +688,6 @@ launch_app() {
         ps aux | grep -v grep | grep -q "win11-clipboard-history" || return 1
     fi
 
-    # Try to steal focus on Wayland via window-calls
-    if [[ "$XDG_SESSION_TYPE" == "wayland" ]] || [[ "$WAYLAND_DISPLAY" != "" ]]; then
-        gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/Windows --method org.gnome.Shell.Extensions.Windows.Focus "win11-clipboard-history" 2>/dev/null || true
-    fi
-
     return 0
 }
 
@@ -1058,7 +1053,7 @@ setup_post_login_enable() {
 [Desktop Entry]
 Type=Application
 Name=Win11Clip First-Run Setup
-Exec=sh -c 'sleep 3 && gnome-extensions enable win11-clipboard-bridge@harshp2008.github.com && gnome-extensions enable window-calls@domandoman.xyz && gnome-extensions enable spawn-at@harsh.local && win11-clipboard-history & sleep 1 && for i in 1 2 3 4 5; do gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell/Extensions/Windows --method org.gnome.Shell.Extensions.Windows.Focus "win11-clipboard-history" 2>/dev/null && break; sleep 0.2; done; rm -f ~/.config/autostart/win11clip-firstrun.desktop'
+Exec=sh -c 'sleep 3 && gnome-extensions enable win11-clipboard-bridge@harshp2008.github.com && gnome-extensions enable window-calls@domandoman.xyz && gnome-extensions enable spawn-at@harsh.local && win11-clipboard-history & sleep 1; rm -f ~/.config/autostart/win11clip-firstrun.desktop'
 Hidden=false
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
