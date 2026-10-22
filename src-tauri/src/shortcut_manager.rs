@@ -8,6 +8,7 @@
 //! - Manual setup instructions for all supported desktop environments
 //! - Tauri IPC commands for onboarding wizard and settings app
 
+use crate::app_id::UPSTREAM_APP_ID;
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use std::env;
 use std::fs;
@@ -99,11 +100,100 @@ fn build_shortcut_command(template: &str, app_path: &str, spawn_at: &str) -> Str
     }
 }
 
+/// What every shortcut runs, up to the app's own arguments. `-c` tells spawn-at which window is the
+/// popup: the app's Wayland app id (X11 class). Without it spawn-at cannot recognise the window and
+/// the popup is not placed at the cursor.
+const SPAWN_TEMPLATE: &str = concat!(
+    "spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c ",
+    crate::app_id!(),
+    " win11-clipboard-history"
+);
+
+/// The Super+V command as written in instructions and hints, before spawn-at and the app path are
+/// substituted.
+const CLIPBOARD_COMMAND: &str = concat!(
+    "spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c ",
+    crate::app_id!(),
+    " win11-clipboard-history --clipboard"
+);
+
+/// The templates earlier releases wrote: v0.7.5 passed no class, and the build after it passed the
+/// upstream class.
+fn older_templates() -> [String; 2] {
+    [
+        "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history".to_string(),
+        format!(
+            "spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c {UPSTREAM_APP_ID} win11-clipboard-history"
+        ),
+    ]
+}
+
+/// Copies of `shortcut` carrying each command an earlier release may have written for it (bare or
+/// full-path spawn-at, bare or full-path app), apart from the current one.
+fn older_configs(shortcut: &ShortcutConfig, app_path: &str, spawn_at: &str) -> Vec<ShortcutConfig> {
+    let current = build_shortcut_command(shortcut.command, app_path, spawn_at);
+    let mut commands: Vec<String> = Vec::new();
+    for template in older_templates() {
+        for sa in [spawn_at, crate::spawn_at_path::SPAWN_AT_NAME] {
+            for app in [app_path, "win11-clipboard-history"] {
+                let cmd = build_shortcut_command(&template, app, sa);
+                if cmd != current && !commands.contains(&cmd) {
+                    commands.push(cmd);
+                }
+            }
+        }
+    }
+    commands
+        .into_iter()
+        .map(|cmd| {
+            let mut older = shortcut.clone();
+            older.command = Box::leak(cmd.into_boxed_str());
+            older
+        })
+        .collect()
+}
+
+/// The arguments (`--clipboard` or `--emoji`) when `cmd` is a spawn-at command that opens this app,
+/// in whatever form a release wrote it (with or without `-c`, any spawn-at path).
+fn own_command_args(cmd: &str) -> Option<&str> {
+    let (prefix, rest) = cmd.split_once(" spawn --anchor cursor")?;
+    if !prefix
+        .trim_end_matches(['"', '\''])
+        .ends_with(crate::spawn_at_path::SPAWN_AT_NAME)
+    {
+        return None;
+    }
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    let opens_app = words.iter().any(|w| {
+        let w = w.trim_matches(['"', '\'']);
+        w.ends_with("win11-clipboard-history") || w.ends_with("win11-clipboard-history-bin")
+    });
+    let args = *words.last()?;
+    (opens_app && matches!(args, "--clipboard" | "--emoji")).then_some(args)
+}
+
+/// Rewrites the line an earlier release wrote for `binding` (a live `keyword` line that names
+/// win11-clipboard-history) to `new_line`. Comment lines are left alone: the handlers park the
+/// user's own bindings there. Returns whether a line was rewritten.
+fn rewrite_own_binding(lines: &mut [String], keyword: &str, binding: &str, new_line: &str) -> bool {
+    for line in lines.iter_mut() {
+        if !line.trim_start().starts_with('#')
+            && line.contains("win11-clipboard-history")
+            && line.contains(keyword)
+            && line.contains(binding)
+        {
+            *line = new_line.to_string();
+            return true;
+        }
+    }
+    false
+}
+
 const SHORTCUTS: &[ShortcutConfig] = &[
     ShortcutConfig {
         id: "win11-clipboard-history",
         name: "Clipboard History",
-        command: "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history",
+        command: SPAWN_TEMPLATE,
         args: "--clipboard",
         gnome_binding: "<Super>v",
         kde_binding: "Meta+V",
@@ -118,7 +208,7 @@ const SHORTCUTS: &[ShortcutConfig] = &[
     ShortcutConfig {
         id: "win11-clipboard-history-alt",
         name: "Clipboard History (Alt)",
-        command: "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history",
+        command: SPAWN_TEMPLATE,
         args: "--clipboard",
         gnome_binding: "<Ctrl><Alt>v",
         kde_binding: "Ctrl+Alt+V",
@@ -133,7 +223,7 @@ const SHORTCUTS: &[ShortcutConfig] = &[
     ShortcutConfig {
         id: "win11-clipboard-history-emoji",
         name: "Emoji Picker",
-        command: "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history",
+        command: SPAWN_TEMPLATE,
         args: "--emoji",
         gnome_binding: "<Super>period",
         kde_binding: "Meta+.",
@@ -203,6 +293,8 @@ pub fn register_global_shortcut() {
         let replaced_cmd = build_shortcut_command(config.command, command_path, &spawn_at);
         config.command = Box::leak(replaced_cmd.into_boxed_str());
 
+        remove_older_entries(handler.as_ref(), shortcut, command_path, &spawn_at, true);
+
         match handler.register(&config) {
             Ok(_) => {
                 println!("[ShortcutManager] \u{2713} Registered '{}'", config.name);
@@ -237,6 +329,8 @@ pub fn unregister_global_shortcut() {
         let replaced_cmd = build_shortcut_command(config.command, command_path, &spawn_at);
         config.command = Box::leak(replaced_cmd.into_boxed_str());
 
+        remove_older_entries(handler.as_ref(), shortcut, command_path, &spawn_at, false);
+
         match handler.unregister(&config) {
             Ok(_) => println!("[ShortcutManager] \u{2713} Unregistered '{}'", config.name),
             Err(e) => eprintln!("[ShortcutManager] \u{2717} Failed '{}': {}", config.name, e),
@@ -258,6 +352,48 @@ trait ShortcutHandler {
     fn name(&self) -> &str;
     fn register(&self, shortcut: &ShortcutConfig) -> Result<()>;
     fn unregister(&self, shortcut: &ShortcutConfig) -> Result<()>;
+    /// How this handler deals with entries an earlier release wrote with another command.
+    fn older_entries(&self) -> OlderEntries {
+        OlderEntries::Overwritten
+    }
+}
+
+/// What a handler does with an entry written by an earlier release (no `-c`, or the upstream class).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OlderEntries {
+    /// The entry is found by its id or key binding and overwritten by `register` (GNOME, Cinnamon,
+    /// KDE, XFCE, LXQt, MATE).
+    Overwritten,
+    /// `register` rewrites the old line in place, but `unregister` only finds it by its command text
+    /// (i3, Sway, Hyprland).
+    RewrittenOnRegister,
+    /// Entries are found by their command text only, so the old ones have to be removed before the
+    /// new one is added (COSMIC, LXDE).
+    FoundByCommand,
+}
+
+/// Removes the entries earlier releases wrote for `shortcut`, so that registering the current
+/// command replaces them instead of leaving a second shortcut next to them.
+fn remove_older_entries(
+    handler: &dyn ShortcutHandler,
+    shortcut: &ShortcutConfig,
+    app_path: &str,
+    spawn_at: &str,
+    before_register: bool,
+) {
+    match handler.older_entries() {
+        OlderEntries::Overwritten => return,
+        OlderEntries::RewrittenOnRegister if before_register => return,
+        _ => {}
+    }
+    for older in older_configs(shortcut, app_path, spawn_at) {
+        if let Err(e) = handler.unregister(&older) {
+            eprintln!(
+                "[ShortcutManager] Could not remove the older '{}' entry: {}",
+                older.name, e
+            );
+        }
+    }
 }
 
 fn detect_handler() -> Box<dyn ShortcutHandler> {
@@ -485,11 +621,30 @@ impl Utils {
 // GSettings Implementation (GNOME, Budgie, Deepin, Cinnamon)
 // =============================================================================
 
+/// Runs gsettings; a trait so that tests can stand in a fake.
+trait GsettingsRunner {
+    fn available(&self) -> bool;
+    fn run(&self, args: &[&str]) -> Result<String>;
+}
+
+struct SystemGsettings;
+
+impl GsettingsRunner for SystemGsettings {
+    fn available(&self) -> bool {
+        Utils::command_exists("gsettings")
+    }
+
+    fn run(&self, args: &[&str]) -> Result<String> {
+        Utils::run("gsettings", args)
+    }
+}
+
 struct GSettings {
     schema: &'static str,
     list_key: &'static str,
     path_prefix: &'static str,
     binding_schema: &'static str,
+    runner: Box<dyn GsettingsRunner>,
 }
 
 impl GSettings {
@@ -499,6 +654,7 @@ impl GSettings {
             list_key: "custom-keybindings",
             path_prefix: "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings",
             binding_schema: "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding",
+            runner: Box::new(SystemGsettings),
         }
     }
 
@@ -508,11 +664,63 @@ impl GSettings {
             list_key: "custom-list",
             path_prefix: "/org/cinnamon/desktop/keybindings/custom-keybindings",
             binding_schema: "org.cinnamon.desktop.keybindings.custom-keybinding",
+            runner: Box::new(SystemGsettings),
         }
     }
 
+    #[cfg(test)]
+    fn with_runner(mut self, runner: Box<dyn GsettingsRunner>) -> Self {
+        self.runner = runner;
+        self
+    }
+
+    /// `schema:path` for the list entry `entry` (a full path on GNOME, a bare id on Cinnamon).
+    fn entry_schema_path(&self, entry: &str) -> String {
+        if self.path_prefix.contains("cinnamon") {
+            format!("{}:{}/{}/", self.binding_schema, self.path_prefix, entry)
+        } else {
+            format!("{}:{}", self.binding_schema, entry)
+        }
+    }
+
+    /// Drops the list entries, other than `keep`, that an earlier release created for `shortcut` at
+    /// a path of their own (a spawn-at command that opens this app, on the same key binding), so
+    /// that `register` leaves one shortcut, not two. Returns the list without them.
+    fn remove_older_copies(
+        &self,
+        list: Vec<String>,
+        keep: &str,
+        shortcut: &ShortcutConfig,
+    ) -> Vec<String> {
+        let mut kept = Vec::with_capacity(list.len());
+        for entry in list {
+            if entry != keep {
+                let schema_path = self.entry_schema_path(&entry);
+                let cmd = self
+                    .runner
+                    .run(&["get", &schema_path, "command"])
+                    .unwrap_or_default();
+                let binding = self
+                    .runner
+                    .run(&["get", &schema_path, "binding"])
+                    .unwrap_or_default();
+                let cmd = cmd.trim().trim_matches('\'');
+                if own_command_args(cmd) == Some(shortcut.args)
+                    && binding.contains(shortcut.gnome_binding)
+                {
+                    for key in ["name", "command", "binding"] {
+                        let _ = self.runner.run(&["reset", &schema_path, key]);
+                    }
+                    continue;
+                }
+            }
+            kept.push(entry);
+        }
+        kept
+    }
+
     fn get_list(&self) -> Result<Vec<String>> {
-        let output = Utils::run("gsettings", &["get", self.schema, self.list_key])?;
+        let output = self.runner.run(&["get", self.schema, self.list_key])?;
         let trimmed = output.trim();
         if trimmed == "@as []" || trimmed == "[]" {
             return Ok(Vec::new());
@@ -533,15 +741,13 @@ impl GSettings {
         let formatted_items: Vec<String> = list.iter().map(|s| format!("'{}'", s)).collect();
         let formatted_list = format!("[{}]", formatted_items.join(", "));
 
-        Utils::run(
-            "gsettings",
-            &["set", self.schema, self.list_key, &formatted_list],
-        )
-        .map(|_| ())
+        self.runner
+            .run(&["set", self.schema, self.list_key, &formatted_list])
+            .map(|_| ())
     }
 
     fn register(&self, shortcut: &ShortcutConfig, use_array_for_binding: bool) -> Result<()> {
-        if !Utils::command_exists("gsettings") {
+        if !self.runner.available() {
             return Err(ShortcutError::DependencyMissing("gsettings".into()));
         }
 
@@ -550,25 +756,39 @@ impl GSettings {
         let expected_path = format!("{}/{}/", self.path_prefix, shortcut.id);
         let schema_path = format!("{}:{}", self.binding_schema, expected_path);
 
+        let entry_check = if self.path_prefix.contains("cinnamon") {
+            expected_path
+                .split('/')
+                .filter(|s| !s.is_empty())
+                .last()
+                .unwrap_or("")
+                .to_string()
+        } else {
+            expected_path.clone()
+        };
+
+        // An older release (or the installer) may have left this shortcut at a path of its own.
+        let before = list.len();
+        list = self.remove_older_copies(list, &entry_check, shortcut);
+        if list.len() != before {
+            self.set_list(&list)?;
+        }
+
         let full_cmd = shortcut.full_command();
         let full_cmd_val = format!("'{}'", full_cmd);
         let name_val = format!("'{}'", shortcut.name);
 
-        Utils::run("gsettings", &["set", &schema_path, "name", &name_val])?;
-        Utils::run("gsettings", &["set", &schema_path, "command", &full_cmd_val])?;
+        self.runner.run(&["set", &schema_path, "name", &name_val])?;
+        self.runner
+            .run(&["set", &schema_path, "command", &full_cmd_val])?;
 
         let binding_val = if use_array_for_binding {
             format!("['{}']", shortcut.gnome_binding)
         } else {
             format!("'{}'", shortcut.gnome_binding)
         };
-        Utils::run("gsettings", &["set", &schema_path, "binding", &binding_val])?;
-
-        let entry_check = if self.path_prefix.contains("cinnamon") {
-            expected_path.split('/').filter(|s| !s.is_empty()).last().unwrap_or("").to_string()
-        } else {
-            expected_path.clone()
-        };
+        self.runner
+            .run(&["set", &schema_path, "binding", &binding_val])?;
 
         if !list.contains(&entry_check) {
             list.push(entry_check);
@@ -579,16 +799,16 @@ impl GSettings {
     }
 
     fn unregister(&self, shortcut: &ShortcutConfig) -> Result<()> {
-        if !Utils::command_exists("gsettings") {
+        if !self.runner.available() {
             return Ok(());
         }
 
         let path = format!("{}/{}/", self.path_prefix, shortcut.id);
         let schema_path = format!("{}:{}", self.binding_schema, path);
 
-        let _ = Utils::run("gsettings", &["reset", &schema_path, "name"]);
-        let _ = Utils::run("gsettings", &["reset", &schema_path, "command"]);
-        let _ = Utils::run("gsettings", &["reset", &schema_path, "binding"]);
+        let _ = self.runner.run(&["reset", &schema_path, "name"]);
+        let _ = self.runner.run(&["reset", &schema_path, "command"]);
+        let _ = self.runner.run(&["reset", &schema_path, "binding"]);
 
         let mut list = self.get_list()?;
         let initial_len = list.len();
@@ -1017,6 +1237,10 @@ impl ShortcutHandler for CosmicHandler {
         "COSMIC (Epoch)"
     }
 
+    fn older_entries(&self) -> OlderEntries {
+        OlderEntries::FoundByCommand
+    }
+
     fn register(&self, s: &ShortcutConfig) -> Result<()> {
         let home = env::var("HOME")
             .map_err(|_| ShortcutError::UnsupportedEnvironment("HOME not set".into()))?;
@@ -1226,6 +1450,10 @@ impl ShortcutHandler for LxdeHandler {
         "LXDE/Openbox"
     }
 
+    fn older_entries(&self) -> OlderEntries {
+        OlderEntries::FoundByCommand
+    }
+
     fn register(&self, s: &ShortcutConfig) -> Result<()> {
         let home = env::var("HOME")
             .map_err(|_| ShortcutError::UnsupportedEnvironment("HOME not set".into()))?;
@@ -1348,6 +1576,10 @@ impl ShortcutHandler for I3Handler {
         "i3"
     }
 
+    fn older_entries(&self) -> OlderEntries {
+        OlderEntries::RewrittenOnRegister
+    }
+
     fn register(&self, s: &ShortcutConfig) -> Result<()> {
         let path = Self::get_config_path()?;
 
@@ -1360,18 +1592,8 @@ impl ShortcutHandler for I3Handler {
             }
 
             let mut lines: Vec<String> = content.lines().map(String::from).collect();
-            let mut updated_existing = false;
-
-            for line in lines.iter_mut() {
-                if line.contains("win11-clipboard-history")
-                    && line.contains("bindsym")
-                    && line.contains(s.i3_binding)
-                {
-                    *line = binding_line.clone();
-                    updated_existing = true;
-                    break;
-                }
-            }
+            let updated_existing =
+                rewrite_own_binding(&mut lines, "bindsym", s.i3_binding, &binding_line);
 
             if updated_existing {
                 return Ok(Some(lines.join("\n")));
@@ -1486,6 +1708,10 @@ impl ShortcutHandler for SwayHandler {
         "Sway"
     }
 
+    fn older_entries(&self) -> OlderEntries {
+        OlderEntries::RewrittenOnRegister
+    }
+
     fn register(&self, s: &ShortcutConfig) -> Result<()> {
         let path = Self::get_config_path()?;
 
@@ -1498,18 +1724,8 @@ impl ShortcutHandler for SwayHandler {
             }
 
             let mut lines: Vec<String> = content.lines().map(String::from).collect();
-            let mut updated_existing = false;
-
-            for line in lines.iter_mut() {
-                if line.contains("win11-clipboard-history")
-                    && line.contains("bindsym")
-                    && line.contains(s.sway_binding)
-                {
-                    *line = binding_line.clone();
-                    updated_existing = true;
-                    break;
-                }
-            }
+            let updated_existing =
+                rewrite_own_binding(&mut lines, "bindsym", s.sway_binding, &binding_line);
 
             if updated_existing {
                 return Ok(Some(lines.join("\n")));
@@ -1613,6 +1829,10 @@ impl ShortcutHandler for HyprlandHandler {
         "Hyprland"
     }
 
+    fn older_entries(&self) -> OlderEntries {
+        OlderEntries::RewrittenOnRegister
+    }
+
     fn register(&self, s: &ShortcutConfig) -> Result<()> {
         let path = Self::get_config_path()?;
 
@@ -1625,18 +1845,8 @@ impl ShortcutHandler for HyprlandHandler {
             }
 
             let mut lines: Vec<String> = content.lines().map(String::from).collect();
-            let mut updated_existing = false;
-
-            for line in lines.iter_mut() {
-                if line.contains("win11-clipboard-history")
-                    && line.contains("bind")
-                    && line.contains(&s.hyprland_binding)
-                {
-                    *line = binding_line.clone();
-                    updated_existing = true;
-                    break;
-                }
-            }
+            let updated_existing =
+                rewrite_own_binding(&mut lines, "bind", s.hyprland_binding, &binding_line);
 
             if updated_existing {
                 return Ok(Some(lines.join("\n")));
@@ -2077,8 +2287,19 @@ fn detect_i3_conflicts() -> Vec<ShortcutConflict> {
                         },
                         owner: "i3 config".to_string(),
                         resolution_command: None,
-                        resolution_steps: format!(
-                            r#"**i3 Config Conflict:**
+                        resolution_steps: i3_conflict_steps(&path),
+                    });
+                }
+            }
+        }
+    }
+
+    conflicts
+}
+
+fn i3_conflict_steps(path: &Path) -> String {
+    format!(
+        r#"**i3 Config Conflict:**
 Found in: {}
 
 **To resolve:**
@@ -2088,20 +2309,58 @@ Found in: {}
 
 **Then add:**
 ```
-bindsym $mod+v exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
+bindsym $mod+v exec {}
 ```
 
 4. Reload i3: Press $mod+Shift+r"#,
-                            path.display(),
-                            path.display()
-                        ),
-                    });
-                }
-            }
-        }
-    }
+        path.display(),
+        path.display(),
+        CLIPBOARD_COMMAND
+    )
+}
 
-    conflicts
+fn sway_conflict_steps(path: &Path) -> String {
+    format!(
+        r#"**Sway Config Conflict:**
+Found in: {}
+
+**To resolve:**
+1. Edit your Sway config: `{}`
+2. Find the line with `bindsym $mod+v`
+3. Change it to a different binding or comment it out
+
+**Then add:**
+```
+bindsym $mod+v exec {}
+```
+
+4. Reload Sway: Press $mod+Shift+c"#,
+        path.display(),
+        path.display(),
+        CLIPBOARD_COMMAND
+    )
+}
+
+fn hyprland_conflict_steps(path: &Path) -> String {
+    format!(
+        r#"**Hyprland Config Conflict:**
+Found in: {}
+
+**To resolve:**
+1. Edit your Hyprland config: `{}`
+2. Find the line with `bind = SUPER, V, ...`
+3. Change it to a different binding or comment it out
+
+**Then add:**
+```
+bind = SUPER, V, exec, {}
+```
+
+4. The config auto-reloads, or reload manually"#,
+        path.display(),
+        path.display(),
+        CLIPBOARD_COMMAND
+    )
 }
 
 fn get_i3_config_paths() -> Vec<PathBuf> {
@@ -2147,24 +2406,7 @@ fn detect_sway_conflicts() -> Vec<ShortcutConflict> {
                         },
                         owner: "Sway config".to_string(),
                         resolution_command: None,
-                        resolution_steps: format!(
-                            r#"**Sway Config Conflict:**
-Found in: {}
-
-**To resolve:**
-1. Edit your Sway config: `{}`
-2. Find the line with `bindsym $mod+v`
-3. Change it to a different binding or comment it out
-
-**Then add:**
-```
-bindsym $mod+v exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
-```
-
-4. Reload Sway: Press $mod+Shift+c"#,
-                            path.display(),
-                            path.display()
-                        ),
+                        resolution_steps: sway_conflict_steps(&path),
                     });
                 }
             }
@@ -2215,24 +2457,7 @@ fn detect_hyprland_conflicts() -> Vec<ShortcutConflict> {
                         current_action: action,
                         owner: "Hyprland config".to_string(),
                         resolution_command: None,
-                        resolution_steps: format!(
-                            r#"**Hyprland Config Conflict:**
-Found in: {}
-
-**To resolve:**
-1. Edit your Hyprland config: `{}`
-2. Find the line with `bind = SUPER, V, ...`
-3. Change it to a different binding or comment it out
-
-**Then add:**
-```
-bind = SUPER, V, exec, spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
-```
-
-4. The config auto-reloads, or reload manually"#,
-                            path.display(),
-                            path.display()
-                        ),
+                        resolution_steps: hyprland_conflict_steps(&path),
                     });
                 }
             }
@@ -2333,12 +2558,12 @@ pub struct ShortcutToolsStatus {
 }
 
 pub fn get_manual_instructions(de: &str) -> String {
-    match de {
+    let text = match de {
         "GNOME" => r#"**GNOME Settings:**
 1. Open Settings → Keyboard → Keyboard Shortcuts → Custom Shortcuts
 2. Click "+" to add a new shortcut
 3. Name: "Clipboard History"
-4. Command: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+4. Command: `@CLIPBOARD_COMMAND@`
 5. Shortcut: Press Super+V
 
 **⚠️ Note:** GNOME uses Super+V for the Notification Center by default.
@@ -2350,7 +2575,7 @@ gsettings set org.gnome.shell.keybindings toggle-message-tray "['<Super><Shift>v
 
         "Pop!_OS" => r#"**Pop!_OS / Pop Shell:**
 1. Open Settings → Keyboard → Keyboard Shortcuts → Custom Shortcuts
-2. Add a new shortcut with command: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+2. Add a new shortcut with command: `@CLIPBOARD_COMMAND@`
 3. Set the shortcut to Super+V
 
 **⚠️ Note:** Pop!_OS inherits GNOME's Super+V for Notification Center.
@@ -2368,7 +2593,7 @@ Settings → Keyboard → Customize Shortcuts → Pop Shell"#
 2. Click "Edit" → "New" → "Global Shortcut" → "Command/URL"
 3. Name: "Clipboard History"
 4. Trigger: Click and press Meta+V
-5. Action: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+5. Action: `@CLIPBOARD_COMMAND@`
 
 **⚠️ Note:** If Klipper (KDE's clipboard) uses Meta+V:
 1. Right-click Klipper in system tray → Configure
@@ -2379,14 +2604,14 @@ Settings → Keyboard → Customize Shortcuts → Pop Shell"#
 1. Open System Settings → Keyboard → Shortcuts → Custom Shortcuts
 2. Click "Add custom shortcut"
 3. Name: "Clipboard History"
-4. Command: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+4. Command: `@CLIPBOARD_COMMAND@`
 5. Click on the shortcut area and press Super+V"#
             .to_string(),
 
         "XFCE" => r#"**XFCE Settings:**
 1. Open Settings → Keyboard → Application Shortcuts
 2. Click "Add"
-3. Command: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+3. Command: `@CLIPBOARD_COMMAND@`
 4. Press Super+V when prompted"#
             .to_string(),
 
@@ -2394,7 +2619,7 @@ Settings → Keyboard → Customize Shortcuts → Pop Shell"#
 1. Open Control Center → Keyboard Shortcuts
 2. Click "Add"
 3. Name: "Clipboard History"
-4. Command: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+4. Command: `@CLIPBOARD_COMMAND@`
 5. Click on the shortcut and press Super+V"#
             .to_string(),
 
@@ -2402,7 +2627,7 @@ Settings → Keyboard → Customize Shortcuts → Pop Shell"#
 1. Open LXQt Configuration → Shortcut Keys
 2. Click "Add"
 3. Description: "Clipboard History"
-4. Command: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+4. Command: `@CLIPBOARD_COMMAND@`
 5. Set shortcut to Meta+V"#
             .to_string(),
 
@@ -2412,7 +2637,7 @@ Settings → Keyboard → Customize Shortcuts → Pop Shell"#
 
 <keybind key="Super_L+v">
   <action name="Execute">
-    <command>spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard</command>
+    <command>@CLIPBOARD_COMMAND@</command>
   </action>
 </keybind>
 
@@ -2422,7 +2647,7 @@ Settings → Keyboard → Customize Shortcuts → Pop Shell"#
         "COSMIC" => r#"**COSMIC Settings:**
 1. Open Settings → Keyboard → Custom Shortcuts
 2. Add new shortcut
-3. Command: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+3. Command: `@CLIPBOARD_COMMAND@`
 4. Binding: Super+V
 
 **Note:** If there's a conflict, check System shortcuts for Super+V bindings."#
@@ -2433,13 +2658,13 @@ Settings → Keyboard → Customize Shortcuts → Pop Shell"#
 2. Comment out or remove any existing `bindsym $mod+v` line
 3. Add this line:
 ```
-bindsym $mod+v exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
+bindsym $mod+v exec @CLIPBOARD_COMMAND@
 ```
 4. Reload i3: Press $mod+Shift+r
 
 **Alternative shortcut:**
 ```
-bindsym Ctrl+Mod1+v exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
+bindsym Ctrl+Mod1+v exec @CLIPBOARD_COMMAND@
 ```"#
             .to_string(),
 
@@ -2448,13 +2673,13 @@ bindsym Ctrl+Mod1+v exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-c
 2. Comment out or remove any existing `bindsym $mod+v` line
 3. Add this line:
 ```
-bindsym $mod+v exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
+bindsym $mod+v exec @CLIPBOARD_COMMAND@
 ```
 4. Reload Sway: Press $mod+Shift+c
 
 **Alternative shortcut:**
 ```
-bindsym Ctrl+Mod1+v exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
+bindsym Ctrl+Mod1+v exec @CLIPBOARD_COMMAND@
 ```"#
             .to_string(),
 
@@ -2463,25 +2688,26 @@ bindsym Ctrl+Mod1+v exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-c
 2. Comment out or remove any existing `bind = SUPER, V, ...` line
 3. Add this line:
 ```
-bind = SUPER, V, exec, spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
+bind = SUPER, V, exec, @CLIPBOARD_COMMAND@
 ```
 4. Config auto-reloads (or press Super+M to reload manually)
 
 **Alternative shortcut:**
 ```
-bind = CTRL ALT, V, exec, spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard
+bind = CTRL ALT, V, exec, @CLIPBOARD_COMMAND@
 ```"#
             .to_string(),
 
         _ => r#"**Generic Instructions:**
 1. Open your desktop environment's keyboard shortcuts settings
 2. Add a new custom shortcut
-3. Command: `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
+3. Command: `@CLIPBOARD_COMMAND@`
 4. Shortcut: Super+V (or your preferred combination)
 
 **Alternative:** Use Ctrl+Alt+V if Super+V conflicts with your DE."#
             .to_string(),
-    }
+    };
+    text.replace("@CLIPBOARD_COMMAND@", CLIPBOARD_COMMAND)
 }
 
 // =============================================================================
@@ -2710,5 +2936,483 @@ mod tests {
     #[test]
     fn test_detect_conflicts_runs() {
         let _result = detect_shortcut_conflicts();
+    }
+}
+
+#[cfg(test)]
+mod app_id_tests {
+    use super::*;
+    use crate::app_id::APP_ID;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    const CLASS_FLAG: &str = concat!("-m 10 -c ", crate::app_id!(), " win11-clipboard-history");
+
+    fn shortcut(id: &str) -> ShortcutConfig {
+        SHORTCUTS.iter().find(|s| s.id == id).unwrap().clone()
+    }
+
+    /// A shortcut whose command went through the same substitution `register_global_shortcut` does.
+    fn resolved(id: &str, spawn_at: &str) -> ShortcutConfig {
+        let mut config = shortcut(id);
+        let cmd = build_shortcut_command(config.command, "win11-clipboard-history", spawn_at);
+        config.command = Box::leak(cmd.into_boxed_str());
+        config
+    }
+
+    #[test]
+    fn every_shortcut_command_passes_the_class_to_spawn_at() {
+        assert_eq!(SHORTCUTS.len(), 3);
+        for s in SHORTCUTS {
+            assert!(s.command.contains(CLASS_FLAG), "{}: {}", s.id, s.command);
+            assert!(s.command.contains(&format!("-c {APP_ID} ")));
+            assert!(s.full_command().ends_with(s.args));
+        }
+    }
+
+    #[test]
+    fn substituting_spawn_at_and_the_app_path_keeps_the_class() {
+        let t = shortcut("win11-clipboard-history");
+        let cmd = build_shortcut_command(
+            t.command,
+            "/usr/bin/win11-clipboard-history",
+            "/h/.local/bin/spawn-at",
+        );
+        assert_eq!(
+            cmd,
+            format!("/h/.local/bin/spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c {APP_ID} /usr/bin/win11-clipboard-history")
+        );
+    }
+
+    #[test]
+    fn clipboard_command_text_matches_the_super_v_shortcut() {
+        assert_eq!(CLIPBOARD_COMMAND, format!("{} --clipboard", SPAWN_TEMPLATE));
+        assert_eq!(
+            CLIPBOARD_COMMAND,
+            shortcut("win11-clipboard-history").full_command()
+        );
+    }
+
+    #[test]
+    fn manual_instructions_and_conflict_hints_all_pass_the_class() {
+        let des = [
+            "GNOME",
+            "Pop!_OS",
+            "KDE Plasma",
+            "Cinnamon",
+            "XFCE",
+            "MATE",
+            "LXQt",
+            "LXDE",
+            "COSMIC",
+            "i3",
+            "Sway",
+            "Hyprland",
+            "anything else",
+        ];
+        for de in des {
+            let text = get_manual_instructions(de);
+            let with_command: Vec<&str> = text.lines().filter(|l| l.contains("spawn-at")).collect();
+            assert!(!with_command.is_empty(), "{de} shows no command");
+            for line in with_command {
+                assert!(line.contains(&format!("-c {APP_ID} ")), "{de}: {line}");
+            }
+            assert!(!text.contains("@CLIPBOARD_COMMAND@"));
+        }
+        // the sway / i3 / Hyprland lines users are told to add
+        for text in [
+            get_manual_instructions("i3"),
+            get_manual_instructions("Sway"),
+            i3_conflict_steps(Path::new("/h/i3/config")),
+            sway_conflict_steps(Path::new("/h/sway/config")),
+            hyprland_conflict_steps(Path::new("/h/hypr/hyprland.conf")),
+        ] {
+            let binds: Vec<&str> = text
+                .lines()
+                .filter(|l| l.starts_with("bindsym ") || l.starts_with("bind = "))
+                .collect();
+            assert!(!binds.is_empty());
+            for line in binds {
+                assert!(line.contains(&format!("exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c {APP_ID} win11-clipboard-history --clipboard"))
+                    || line.contains(&format!("exec, spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c {APP_ID} win11-clipboard-history --clipboard")), "{line}");
+            }
+        }
+    }
+
+    #[test]
+    fn own_command_is_recognised_in_every_form_a_release_wrote() {
+        let forms = [
+            "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard",
+            "/home/u/.local/bin/spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard",
+            "\"/h/a b/spawn-at\" spawn --anchor cursor -o -15 -15 -m 10 -c dev.gustavosett.clipboard-history /usr/bin/win11-clipboard-history --clipboard",
+            &format!("spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c {APP_ID} win11-clipboard-history --clipboard"),
+        ];
+        for f in forms {
+            assert_eq!(own_command_args(f), Some("--clipboard"), "{f}");
+        }
+        assert_eq!(
+            own_command_args(
+                "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --emoji"
+            ),
+            Some("--emoji")
+        );
+        // not ours
+        assert_eq!(own_command_args("gnome-terminal"), None);
+        assert_eq!(
+            own_command_args("spawn-at spawn --anchor cursor firefox"),
+            None
+        );
+        assert_eq!(
+            own_command_args("xdotool spawn --anchor cursor win11-clipboard-history --clipboard"),
+            None
+        );
+    }
+
+    #[test]
+    fn older_commands_are_listed_without_the_current_one() {
+        let s = shortcut("win11-clipboard-history-emoji");
+        let older = older_configs(&s, "win11-clipboard-history", "/h/.local/bin/spawn-at");
+        let cmds: Vec<String> = older.iter().map(|o| o.full_command()).collect();
+        let current =
+            resolved("win11-clipboard-history-emoji", "/h/.local/bin/spawn-at").full_command();
+        assert!(!cmds.contains(&current));
+        assert!(cmds.contains(
+            &"spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --emoji"
+                .to_string()
+        ));
+        assert!(cmds.contains(&"/h/.local/bin/spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --emoji".to_string()));
+        assert!(cmds.contains(&"/h/.local/bin/spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c dev.gustavosett.clipboard-history win11-clipboard-history --emoji".to_string()));
+        assert!(cmds.iter().all(|c| !c.contains(APP_ID)));
+        let mut unique = cmds.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), cmds.len());
+        // the app executable as a full path is covered too
+        let older = older_configs(&s, "/usr/bin/win11-clipboard-history", "spawn-at");
+        assert!(older.iter().any(|o| o.full_command() == "spawn-at spawn --anchor cursor -o -15 -15 -m 10 /usr/bin/win11-clipboard-history --emoji"));
+    }
+
+    // ---- gsettings (GNOME) with an injected runner --------------------------------------------
+
+    type Store = Rc<RefCell<HashMap<(String, String), String>>>;
+
+    struct FakeGsettings(Store);
+
+    impl GsettingsRunner for FakeGsettings {
+        fn available(&self) -> bool {
+            true
+        }
+
+        fn run(&self, args: &[&str]) -> Result<String> {
+            let mut store = self.0.borrow_mut();
+            let key = (args[1].to_string(), args[2].to_string());
+            match args[0] {
+                "get" => Ok(store.get(&key).cloned().unwrap_or_else(|| {
+                    if args[2] == "custom-keybindings" {
+                        "@as []"
+                    } else {
+                        "''"
+                    }
+                    .to_string()
+                })),
+                "set" => {
+                    store.insert(key, args[3].to_string());
+                    Ok(String::new())
+                }
+                "reset" => {
+                    store.remove(&key);
+                    Ok(String::new())
+                }
+                other => panic!("unexpected gsettings call {other}"),
+            }
+        }
+    }
+
+    const BASE: &str = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings";
+    const BSCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding";
+    const LIST_SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys";
+
+    fn get(store: &Store, leaf: &str, key: &str) -> String {
+        store
+            .borrow()
+            .get(&(format!("{BSCHEMA}:{BASE}/{leaf}/"), key.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn list(store: &Store) -> Vec<String> {
+        let raw = store
+            .borrow()
+            .get(&(LIST_SCHEMA.to_string(), "custom-keybindings".to_string()))
+            .cloned()
+            .unwrap_or_default();
+        raw.split('\'')
+            .enumerate()
+            .filter(|(i, _)| i % 2 == 1)
+            .map(|(_, s)| s.to_string())
+            .collect()
+    }
+
+    fn seed(store: &Store, leaf: &str, cmd: &str, binding: &str) {
+        let schema = format!("{BSCHEMA}:{BASE}/{leaf}/");
+        let mut st = store.borrow_mut();
+        st.insert((schema.clone(), "name".into()), "'x'".into());
+        st.insert((schema.clone(), "command".into()), format!("'{cmd}'"));
+        st.insert((schema, "binding".into()), format!("'{binding}'"));
+    }
+
+    fn set_list(store: &Store, leaves: &[&str]) {
+        let items: Vec<String> = leaves.iter().map(|l| format!("'{BASE}/{l}/'")).collect();
+        store.borrow_mut().insert(
+            (LIST_SCHEMA.to_string(), "custom-keybindings".to_string()),
+            format!("[{}]", items.join(", ")),
+        );
+    }
+
+    fn gnome(store: &Store) -> GSettings {
+        GSettings::new_gnome().with_runner(Box::new(FakeGsettings(store.clone())))
+    }
+
+    #[test]
+    fn old_form_gnome_shortcuts_are_replaced_by_the_new_form_not_duplicated() {
+        let store: Store = Rc::default();
+        // v0.7.5 (bare spawn-at, no class) at a custom path, the unreleased build (full path, upstream
+        // class) at a custom path, one at the canonical path, and an unrelated shortcut.
+        seed(
+            &store,
+            "custom0",
+            "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard",
+            "<Super>v",
+        );
+        seed(&store, "custom1", "/h/.local/bin/spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c dev.gustavosett.clipboard-history win11-clipboard-history --emoji", "<Super>period");
+        seed(
+            &store,
+            "win11-clipboard-history-alt",
+            "spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard",
+            "<Ctrl><Alt>v",
+        );
+        seed(&store, "custom2", "gnome-terminal", "<Super>t");
+        set_list(
+            &store,
+            &[
+                "custom0",
+                "custom1",
+                "win11-clipboard-history-alt",
+                "custom2",
+            ],
+        );
+
+        let gs = gnome(&store);
+        for id in [
+            "win11-clipboard-history",
+            "win11-clipboard-history-alt",
+            "win11-clipboard-history-emoji",
+        ] {
+            gs.register(&resolved(id, "/h/.local/bin/spawn-at"), false)
+                .unwrap();
+        }
+
+        // exactly the three canonical entries plus the user's own
+        let mut got = list(&store);
+        got.sort();
+        let mut want: Vec<String> = [
+            "custom2",
+            "win11-clipboard-history",
+            "win11-clipboard-history-alt",
+            "win11-clipboard-history-emoji",
+        ]
+        .iter()
+        .map(|l| format!("{BASE}/{l}/"))
+        .collect();
+        want.sort();
+        assert_eq!(got, want);
+
+        for (leaf, args, binding) in [
+            ("win11-clipboard-history", "--clipboard", "<Super>v"),
+            ("win11-clipboard-history-alt", "--clipboard", "<Ctrl><Alt>v"),
+            ("win11-clipboard-history-emoji", "--emoji", "<Super>period"),
+        ] {
+            assert_eq!(
+                get(&store, leaf, "command"),
+                format!("'/h/.local/bin/spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c {APP_ID} win11-clipboard-history {args}'")
+            );
+            assert_eq!(get(&store, leaf, "binding"), format!("'{binding}'"));
+        }
+        // the old custom paths were cleared, the user's shortcut was not touched
+        assert_eq!(get(&store, "custom0", "command"), "");
+        assert_eq!(get(&store, "custom1", "command"), "");
+        assert_eq!(get(&store, "custom2", "command"), "'gnome-terminal'");
+        assert_eq!(get(&store, "custom2", "binding"), "'<Super>t'");
+
+        // registering again changes nothing
+        let before = (
+            list(&store),
+            get(&store, "win11-clipboard-history", "command"),
+        );
+        for id in [
+            "win11-clipboard-history",
+            "win11-clipboard-history-alt",
+            "win11-clipboard-history-emoji",
+        ] {
+            gs.register(&resolved(id, "/h/.local/bin/spawn-at"), false)
+                .unwrap();
+        }
+        assert_eq!(
+            (
+                list(&store),
+                get(&store, "win11-clipboard-history", "command")
+            ),
+            before
+        );
+    }
+
+    #[test]
+    fn a_fresh_gnome_install_gets_the_new_form() {
+        let store: Store = Rc::default();
+        gnome(&store)
+            .register(
+                &resolved("win11-clipboard-history-emoji", "spawn-at"),
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            list(&store),
+            vec![format!("{BASE}/win11-clipboard-history-emoji/")]
+        );
+        assert!(get(&store, "win11-clipboard-history-emoji", "command")
+            .contains(&format!("-c {APP_ID} ")));
+    }
+
+    // ---- which handlers clean up older entries, and with which commands -----------------------
+
+    struct Recorder {
+        kind: OlderEntries,
+        removed: RefCell<Vec<String>>,
+    }
+
+    impl ShortcutHandler for Recorder {
+        fn name(&self) -> &str {
+            "recorder"
+        }
+        fn register(&self, _: &ShortcutConfig) -> Result<()> {
+            Ok(())
+        }
+        fn unregister(&self, s: &ShortcutConfig) -> Result<()> {
+            self.removed.borrow_mut().push(s.full_command());
+            Ok(())
+        }
+        fn older_entries(&self) -> OlderEntries {
+            self.kind
+        }
+    }
+
+    #[test]
+    fn handlers_that_find_entries_by_command_drop_the_old_ones_before_registering() {
+        let s = shortcut("win11-clipboard-history");
+        for (kind, before_register, expect_calls) in [
+            (OlderEntries::Overwritten, true, false),
+            (OlderEntries::Overwritten, false, false),
+            (OlderEntries::RewrittenOnRegister, true, false),
+            (OlderEntries::RewrittenOnRegister, false, true),
+            (OlderEntries::FoundByCommand, true, true),
+            (OlderEntries::FoundByCommand, false, true),
+        ] {
+            let h = Recorder {
+                kind,
+                removed: RefCell::new(Vec::new()),
+            };
+            remove_older_entries(
+                &h,
+                &s,
+                "win11-clipboard-history",
+                "spawn-at",
+                before_register,
+            );
+            let removed = h.removed.borrow();
+            assert_eq!(
+                !removed.is_empty(),
+                expect_calls,
+                "{kind:?} before_register={before_register}"
+            );
+            assert!(
+                removed.iter().all(|c| !c.contains(APP_ID)),
+                "the new command is never removed"
+            );
+        }
+    }
+
+    #[test]
+    fn the_real_handlers_declare_how_they_treat_older_entries() {
+        assert_eq!(GnomeHandler.older_entries(), OlderEntries::Overwritten);
+        assert_eq!(KdeHandler.older_entries(), OlderEntries::Overwritten);
+        assert_eq!(CosmicHandler.older_entries(), OlderEntries::FoundByCommand);
+        assert_eq!(LxdeHandler.older_entries(), OlderEntries::FoundByCommand);
+        assert_eq!(I3Handler.older_entries(), OlderEntries::RewrittenOnRegister);
+        assert_eq!(
+            SwayHandler.older_entries(),
+            OlderEntries::RewrittenOnRegister
+        );
+        assert_eq!(
+            HyprlandHandler.older_entries(),
+            OlderEntries::RewrittenOnRegister
+        );
+    }
+
+    // ---- sway / i3 / Hyprland rewrite the old line in place -----------------------------------
+
+    #[test]
+    fn an_old_bindsym_line_is_rewritten_in_place_and_the_parked_original_is_left_alone() {
+        let new_line = format!(
+            "bindsym $mod+v exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c {APP_ID} win11-clipboard-history --clipboard"
+        );
+        let mut lines: Vec<String> = [
+            "set $mod Mod4",
+            "# bindsym $mod+v exec rofi # Commented by win11-clipboard-history",
+            "",
+            "# Clipboard History (added by win11-clipboard-history)",
+            "bindsym $mod+v exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard",
+            "bindsym $mod+period exec spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --emoji",
+        ]
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+
+        assert!(rewrite_own_binding(
+            &mut lines, "bindsym", "$mod+v", &new_line
+        ));
+        assert_eq!(
+            lines[1],
+            "# bindsym $mod+v exec rofi # Commented by win11-clipboard-history"
+        );
+        assert_eq!(lines[4], new_line);
+        assert!(
+            lines[5].ends_with("win11-clipboard-history --emoji"),
+            "other bindings are not touched"
+        );
+        let live: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.starts_with("bindsym $mod+v"))
+            .collect();
+        assert_eq!(live.len(), 1, "no duplicate live binding");
+
+        // nothing to rewrite for a binding we never wrote
+        assert!(!rewrite_own_binding(
+            &mut lines, "bindsym", "$mod+x", &new_line
+        ));
+    }
+
+    #[test]
+    fn an_old_hyprland_line_is_rewritten_in_place() {
+        let new_line = format!(
+            "bind = SUPER, V, exec, spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c {APP_ID} win11-clipboard-history --clipboard"
+        );
+        let mut lines = vec![
+            "bind = SUPER, V, exec, spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard".to_string(),
+        ];
+        assert!(rewrite_own_binding(
+            &mut lines, "bind", "SUPER, V", &new_line
+        ));
+        assert_eq!(lines, vec![new_line]);
     }
 }

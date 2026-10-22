@@ -4,11 +4,15 @@
   "version": "0.7.5",
   "type": "module",
   "description": "A Windows 11-style Clipboard History Manager for Linux built with Tauri",
-  "author": "gustavosett",
+  "author": "harshp2008",
+  "homepage": "https://github.com/harshp2008/Win11Clip",
+  "bugs": {
+    "url": "https://github.com/harshp2008/Win11Clip/issues"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux"
+    "url": "https://github.com/harshp2008/Win11Clip.git"
   },
   "keywords": [
     "clipboard",

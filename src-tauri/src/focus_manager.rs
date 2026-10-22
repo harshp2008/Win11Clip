@@ -339,7 +339,8 @@ impl WcWindow {
         let title = self.title.to_lowercase();
         (cls == WC_CLIPBOARD_WM_CLASS
             || cls == "win11-clipboard-history-bin"
-            || cls == "dev.gustavosett.clipboard-history"
+            || cls == crate::app_id::APP_ID
+            || cls == crate::app_id::UPSTREAM_APP_ID
             || cls.starts_with("win11-clipboard")
             || cls.contains("clipboard-history")
             || title == "clipboard history")
@@ -662,3 +663,44 @@ pub fn wayland_snap_to_cursor(cb_id: u64) {
     }
 }
 
+#[cfg(test)]
+mod is_clipboard_tests {
+    use super::WcWindow;
+    use crate::app_id::{APP_ID, LEGACY_APP_IDS};
+
+    fn window(wm_class: &str, title: &str) -> WcWindow {
+        WcWindow {
+            id: 1,
+            pid: 1,
+            wm_class: wm_class.to_string(),
+            title: title.to_string(),
+            focus: false,
+        }
+    }
+
+    #[test]
+    fn app_id_is_lowercase_because_the_class_is_compared_lowercased() {
+        assert_eq!(APP_ID, APP_ID.to_lowercase());
+    }
+
+    #[test]
+    fn the_popup_is_recognised_by_the_app_id() {
+        assert!(window(APP_ID, "Clipboard History").is_clipboard());
+        assert!(window(APP_ID, "").is_clipboard());
+        assert!(window(&APP_ID.to_uppercase(), "").is_clipboard());
+    }
+
+    #[test]
+    fn every_older_class_is_still_recognised() {
+        for old in LEGACY_APP_IDS {
+            assert!(window(old, "Clipboard History").is_clipboard());
+        }
+        assert!(window("win11-clipboard-history-bin", "").is_clipboard());
+    }
+
+    #[test]
+    fn the_settings_window_and_other_apps_are_not_the_popup() {
+        assert!(!window(APP_ID, "Settings - Clipboard History").is_clipboard());
+        assert!(!window("firefox", "Mozilla Firefox").is_clipboard());
+    }
+}

@@ -1017,7 +1017,10 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 fn main() {
     #[cfg(target_os = "linux")]
     {
-        gtk::glib::set_prgname(Some("dev.gustavosett.clipboard-history"));
+        // GTK takes the Wayland app id (and X11 class) from the program name; spawn-at finds the
+        // popup by it, so it has to be the same id the shortcuts pass with -c.
+        gtk::glib::set_prgname(Some(win11_clipboard_history_lib::app_id::APP_ID));
+        // Only the human-readable name; it does not change the app id.
         gtk::glib::set_application_name("Clipboard History");
     }
 
@@ -1052,6 +1055,9 @@ fn main() {
         println!("    Ctrl+Alt+V       Alternative shortcut");
         return;
     }
+
+    // The webview's storage lives in a folder named after the app id; bring the old one along.
+    win11_clipboard_history_lib::app_id::migrate_legacy_webview_data();
 
     // MUST run before Tauri / WebKit init – detects NVIDIA & AppImage and
     // sets WEBKIT_DISABLE_DMABUF_RENDERER=1 when needed.
