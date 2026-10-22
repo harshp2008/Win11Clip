@@ -240,6 +240,11 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
     } catch (e) {
       console.error('Failed to mark first run complete:', e)
     }
+    try {
+      await invoke('register_adaptive_dock_bypass')
+    } catch (e) {
+      console.error('Failed to register adaptive dock bypass:', e)
+    }
     onComplete()
   }
 

@@ -672,7 +672,7 @@ Exec=$HOME/.local/bin/win11-clipboard-history
 Icon=win11-clipboard-history
 Terminal=false
 Categories=Utility;
-StartupWMClass=win11-clipboard-history
+StartupWMClass=dev.gustavosett.clipboard-history
 EOF
     
     # Ask about udev rules for AppImage (optional - maintains portability)

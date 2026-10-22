@@ -337,9 +337,11 @@ impl WcWindow {
     pub fn is_clipboard(&self) -> bool {
         let cls = self.wm_class.to_lowercase();
         let title = self.title.to_lowercase();
-        (cls == "win11-clipboard-history"
+        (cls == WC_CLIPBOARD_WM_CLASS
             || cls == "win11-clipboard-history-bin"
+            || cls == "dev.gustavosett.clipboard-history"
             || cls.starts_with("win11-clipboard")
+            || cls.contains("clipboard-history")
             || title == "clipboard history")
             && !title.contains("settings")
     }

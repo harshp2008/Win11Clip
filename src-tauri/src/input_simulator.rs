@@ -724,11 +724,13 @@ mod tests {
         assert_eq!(
             actual_term,
             vec![
+                (EV_KEY, KEY_LEFTCTRL, 1),
                 (EV_KEY, KEY_LEFTSHIFT, 1),
-                (EV_KEY, KEY_INSERT, 1),
+                (EV_KEY, KEY_V, 1),
                 (EV_SYN, SYN_REPORT, 0),
-                (EV_KEY, KEY_INSERT, 0),
+                (EV_KEY, KEY_V, 0),
                 (EV_KEY, KEY_LEFTSHIFT, 0),
+                (EV_KEY, KEY_LEFTCTRL, 0),
                 (EV_SYN, SYN_REPORT, 0),
             ]
         );

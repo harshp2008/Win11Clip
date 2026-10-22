@@ -19,6 +19,7 @@ Terminal=false
 Categories=Utility;
 StartupNotify=false
 X-GNOME-Autostart-enabled=true
+StartupWMClass=dev.gustavosett.clipboard-history
 "#;
 
 /// The login auto-update entry. `spawn_at` is the command from `spawn_at_path::desktop_exec_in`
@@ -181,7 +182,10 @@ pub fn autostart_migrate() -> Result<bool, String> {
         .lines()
         .any(|line| line.trim_start().starts_with("X-GNOME-Autostart-Delay="));
 
-    let needs_migration = uses_old_binary || missing_sleep || missing_background || has_gnome_delay;
+    // Check if missing StartupWMClass with reverse-DNS identifier
+    let missing_wm_class = !content.contains("StartupWMClass=dev.gustavosett.clipboard-history");
+
+    let needs_migration = uses_old_binary || missing_sleep || missing_background || has_gnome_delay || missing_wm_class;
 
     if needs_migration {
         if uses_old_binary {
@@ -195,6 +199,9 @@ pub fn autostart_migrate() -> Result<bool, String> {
         }
         if has_gnome_delay {
             println!("[Autostart] Replacing X-GNOME-Autostart-Delay with sleep in exec (multi-distro compatibility)...");
+        }
+        if missing_wm_class {
+            println!("[Autostart] Adding StartupWMClass to autostart entry for reverse-DNS app matching...");
         }
 
         // Re-enable with correct path, sleep and --background

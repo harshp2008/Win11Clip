@@ -11,6 +11,7 @@ use tauri::{
     AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, State, WebviewWindow,
     WindowEvent,
 };
+use win11_clipboard_history_lib::adaptive_dock;
 use win11_clipboard_history_lib::autostart_manager;
 use win11_clipboard_history_lib::clipboard_manager::{ClipboardContent, ClipboardItem, ClipboardManager};
 use win11_clipboard_history_lib::config_manager::{resolve_window_position, ConfigManager};
@@ -408,6 +409,9 @@ async fn copy_text_to_clipboard(_state: State<'_, AppState>, text: String) -> Re
 
 #[tauri::command]
 async fn finish_setup(app: AppHandle) -> Result<(), String> {
+    // 0. Register Adaptive Dock bypass state if installed or applicable
+    win11_clipboard_history_lib::adaptive_dock::register_bypass_if_applicable();
+
     // 1. Mark first run as complete (redundant but safe)
     win11_clipboard_history_lib::permission_checker::mark_first_run_complete()
         .map_err(|e| e.to_string())?;
@@ -1011,6 +1015,12 @@ fn start_clipboard_watcher(app: AppHandle, clipboard_manager: Arc<Mutex<Clipboar
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    {
+        gtk::glib::set_prgname(Some("dev.gustavosett.clipboard-history"));
+        gtk::glib::set_application_name("Clipboard History");
+    }
+
     let args: Vec<String> = std::env::args().collect();
 
     // Handle --version / -v
@@ -1184,6 +1194,9 @@ fn main() {
 
             // Ensure spawn-at auto-update on login entry is configured
             let _ = autostart_manager::ensure_spawn_at_autoupdate();
+
+            // Register Adaptive Dock bypass state if installed or applicable
+            win11_clipboard_history_lib::adaptive_dock::register_bypass_if_applicable();
 
             // Run asynchronous background spawn-at update check on startup
             tauri::async_runtime::spawn(async move {
@@ -1423,6 +1436,8 @@ fn main() {
             autostart_manager::autostart_is_enabled,
             autostart_manager::autostart_migrate,
             rendering_env::get_rendering_environment,
+            adaptive_dock::register_adaptive_dock_bypass,
+            adaptive_dock::is_adaptive_dock_installed,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
