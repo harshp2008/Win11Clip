@@ -27,6 +27,7 @@ use win11_clipboard_history_lib::permission_checker;
 use win11_clipboard_history_lib::rendering_env;
 use win11_clipboard_history_lib::session::is_wayland;
 use win11_clipboard_history_lib::shortcut_manager;
+use win11_clipboard_history_lib::show_debug;
 use win11_clipboard_history_lib::theme_manager::{self, ThemeInfo};
 use win11_clipboard_history_lib::user_settings::{UserSettings, UserSettingsManager};
 
@@ -175,10 +176,24 @@ fn get_startup_tab() -> Option<String> {
 #[tauri::command]
 fn notify_tab_applied() -> bool {
     let confirmed = SHOW_GATE.lock().unwrap().confirm();
+    if confirmed {
+        show_debug::log("confirmation received", "notify_tab_applied");
+    } else {
+        show_debug::log("confirmation ignored", "no deferred show pending");
+    }
     println!(
         "[WindowController] Frontend confirmed tab applied (deferred show released: {confirmed})"
     );
     confirmed
+}
+
+/// Opt-in timing log forwarded from the frontend (`W11C_SHOW_DEBUG=1` only).
+///
+/// The frontend calls this from its `switch-tab` handler so the backend log shows
+/// when the event reached React. Without the environment variable this is a no-op.
+#[tauri::command]
+fn debug_log(message: String) {
+    show_debug::log("frontend handler received", &message);
 }
 
 // --- User Settings Commands ---
@@ -534,7 +549,12 @@ impl WindowController {
         // Already visible: the tab switch happens in place and the compositor does not
         // re-present an old frame, so emitting the event is enough (existing behaviour).
         if window.is_visible().unwrap_or(false) {
+            show_debug::arm(&format!(
+                "tab={tab} visible=true (in-place switch, no gate)"
+            ));
             let _ = app.emit("switch-tab", tab);
+            show_debug::log("event emitted", &format!("switch-tab {tab}"));
+            show_debug::clear();
             IPC_TAB_SWITCH_IN_PROGRESS.store(false, Ordering::SeqCst);
             return;
         }
@@ -543,18 +563,28 @@ impl WindowController {
         // answer cannot be lost, then wait for it before showing. Without this, show()
         // presents the frame WebKit already had (the previously selected tab) and the
         // requested tab only appears a frame or two later — the visible flash.
+        show_debug::arm(&format!("tab={tab} visible=false"));
         let (generation, confirmation) = SHOW_GATE.lock().unwrap().arm();
         let _ = app.emit("switch-tab", tab);
+        show_debug::log("event emitted", &format!("switch-tab {tab}"));
 
         let app = app.clone();
         std::thread::spawn(move || {
             // Returns early on confirmation, after the timeout if the frontend never
             // answers. Either way the popup is not left hidden.
-            let _ = confirmation.recv_timeout(SHOW_TAB_CONFIRM_TIMEOUT);
+            match confirmation.recv_timeout(SHOW_TAB_CONFIRM_TIMEOUT) {
+                Ok(()) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    show_debug::log("timeout fired", "showing without frontend confirmation");
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    show_debug::log("superseded", "newer request owns the show");
+                }
+            }
 
             if !SHOW_GATE.lock().unwrap().finish(generation) {
                 // A newer tab request superseded this show; that request owns the show
-                // and will clear the IPC guard itself.
+                // and will clear the IPC guard itself (and re-arm the debug timer).
                 return;
             }
 
@@ -586,6 +616,7 @@ impl WindowController {
                     Self::position_and_show(&window, &app, false);
                 }
             }
+            show_debug::clear();
             IPC_TAB_SWITCH_IN_PROGRESS.store(false, Ordering::SeqCst);
         });
     }
@@ -615,6 +646,14 @@ impl WindowController {
         let always_on_top = UserSettingsManager::new().load().always_on_top;
 
         if is_wayland_session {
+            show_debug::log(
+                "window.show() called",
+                if snap_to_cursor {
+                    "tray/menu path"
+                } else {
+                    "deferred shortcut path"
+                },
+            );
             let _ = window.show();
             let _ = window.set_always_on_top(true); // compositor hint (best-effort)
             // On Wayland, avoid window.set_focus() as it triggers Mutter's Focus Stealing Prevention toast.
@@ -633,6 +672,14 @@ impl WindowController {
                 });
             }
         } else {
+            show_debug::log(
+                "window.show() called",
+                if snap_to_cursor {
+                    "tray/menu path"
+                } else {
+                    "deferred shortcut path"
+                },
+            );
             let _ = window.show();
             let _ = window.set_focus();
         }
@@ -1352,6 +1399,7 @@ fn main() {
             set_mouse_state,
             get_startup_tab,
             notify_tab_applied,
+            debug_log,
             get_user_settings,
             set_user_settings,
             is_settings_window_visible,
@@ -1405,6 +1453,25 @@ mod show_gate_tests {
 
         assert!(receiver.recv_timeout(Duration::from_millis(5)).is_err());
         assert!(gate.finish(generation));
+    }
+
+    /// The requested tab can already be the active tab (e.g. Super+. pressed twice on
+    /// the emoji tab). The frontend confirms from the event handler whether or not the
+    /// tab changed, and the gate must release immediately instead of waiting for the
+    /// timeout. The backend has no "did it change" condition, so a confirmation is
+    /// always accepted.
+    #[test]
+    fn confirmation_releases_even_when_the_tab_did_not_change() {
+        let mut gate = ShowGate::new();
+        let (generation, receiver) = gate.arm();
+
+        // The frontend always calls notify_tab_applied from its switch-tab handler.
+        assert!(gate.confirm());
+        assert!(receiver.recv_timeout(Duration::from_millis(100)).is_ok());
+        assert!(gate.finish(generation));
+
+        // A duplicate confirmation is a harmless no-op.
+        assert!(!gate.confirm());
     }
 
     /// A newer tab request supersedes an older pending show; only the newest request

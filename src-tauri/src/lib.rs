@@ -14,6 +14,7 @@ pub mod permission_checker;
 pub mod rendering_env;
 pub mod session;
 pub mod shortcut_manager;
+pub mod show_debug;
 pub mod spawn_at_path;
 pub mod theme_manager;
 pub mod user_settings;

@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
+import { flushSync } from 'react-dom'
 import { clsx } from 'clsx'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
@@ -146,11 +147,23 @@ function ClipboardApp({ initialTab }: { initialTab?: ActiveTab | null }) {
       applyUIScale(newSettings.ui_scale)
     })
 
-    // Listen for switch-tab events from Rust (e.g., when Super+. is pressed)
+    // Listen for switch-tab events from Rust (e.g., when Super+. is pressed).
+    // The backend defers showing the hidden window until notify_tab_applied arrives,
+    // so the requested tab has to be committed here, from the event itself:
+    //  - flushSync applies the state update synchronously. A later passive effect
+    //    would not guarantee the tab was applied before the backend shows the window.
+    //  - the confirmation is sent even when the requested tab is already active;
+    //    waiting for an activeTab change would leave the show stuck until the timeout.
     const unlistenSwitchTab = listen<string>('switch-tab', (event) => {
       const tabName = event.payload as ActiveTab
       if (['clipboard', 'emoji', 'kaomoji', 'symbols'].includes(tabName)) {
-        setActiveTab(tabName)
+        invoke('debug_log', { message: `switch-tab ${tabName}` }).catch(() => {})
+        flushSync(() => {
+          setActiveTab(tabName)
+        })
+        invoke('notify_tab_applied').catch((err) => {
+          console.error('Failed to confirm tab applied:', err)
+        })
       }
     })
 
@@ -159,18 +172,6 @@ function ClipboardApp({ initialTab }: { initialTab?: ActiveTab | null }) {
       unlistenSwitchTab.then((unlisten) => unlisten())
     }
   }, [])
-
-  // Tell Rust that the requested tab is on screen. A single-instance tab switch
-  // defers showing the window until this arrives, so the window is presented with
-  // the new tab painted instead of flashing the previously selected one first.
-  // This runs after React has committed and painted; the backend ignores it when
-  // no show is pending, and falls back to a timeout if it never arrives.
-  useEffect(() => {
-    if (!settingsLoaded) return
-    invoke('notify_tab_applied').catch((err) => {
-      console.error('Failed to confirm tab applied:', err)
-    })
-  }, [activeTab, settingsLoaded])
 
   // Re-apply CSS opacity variables whenever renderingEnv or settings change
   useEffect(() => {
