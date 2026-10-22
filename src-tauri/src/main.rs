@@ -27,6 +27,7 @@ use win11_clipboard_history_lib::permission_checker;
 use win11_clipboard_history_lib::rendering_env;
 use win11_clipboard_history_lib::session::is_wayland;
 use win11_clipboard_history_lib::shortcut_manager;
+use win11_clipboard_history_lib::show_debug;
 use win11_clipboard_history_lib::theme_manager::{self, ThemeInfo};
 use win11_clipboard_history_lib::user_settings::{UserSettings, UserSettingsManager};
 
@@ -46,6 +47,62 @@ static IPC_TAB_SWITCH_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// Guard flag set while keep-open emoji paste is temporarily yielding focus to the target editor.
 static KEEP_OPEN_PASTE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// How long a deferred window show waits for the frontend to confirm it painted the
+/// requested tab. The popup must never stay hidden if the webview never answers, so
+/// after this timeout the window is shown anyway (the old tab may then flash briefly,
+/// which only happens if the frontend is wedged or still loading).
+const SHOW_TAB_CONFIRM_TIMEOUT: Duration = Duration::from_millis(300);
+
+/// Coordinates a single deferred show of the main window with the frontend.
+///
+/// The second-instance handler emits `switch-tab` and then has to wait: showing the
+/// window immediately makes the compositor present the frame WebKit already painted
+/// (the old tab), and the new tab only appears one or more frames later. So the show
+/// is armed here, the event is emitted, and the window is shown by the waiting thread
+/// once the frontend calls `notify_tab_applied` (or the timeout fires).
+struct ShowGate {
+    generation: u64,
+    pending: Option<(u64, std::sync::mpsc::Sender<()>)>,
+}
+
+impl ShowGate {
+    const fn new() -> Self {
+        Self {
+            generation: 0,
+            pending: None,
+        }
+    }
+
+    /// Arms a new deferred show and returns its generation and confirmation receiver.
+    fn arm(&mut self) -> (u64, std::sync::mpsc::Receiver<()>) {
+        self.generation += 1;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pending = Some((self.generation, tx));
+        (self.generation, rx)
+    }
+
+    /// The frontend says the requested tab is on screen; wake the waiting show.
+    fn confirm(&mut self) -> bool {
+        match self.pending.take() {
+            Some((_generation, tx)) => tx.send(()).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Called by the waiting thread: true when `generation` is still the newest request
+    /// (and therefore owns the show), false when a newer request superseded it.
+    fn finish(&mut self, generation: u64) -> bool {
+        if self.generation == generation {
+            self.pending = None;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+static SHOW_GATE: std::sync::Mutex<ShowGate> = std::sync::Mutex::new(ShowGate::new());
 
 /// Application state shared across all handlers
 pub struct AppState {
@@ -93,6 +150,50 @@ fn get_recent_emojis(state: State<AppState>) -> Vec<EmojiUsage> {
 #[tauri::command]
 fn set_mouse_state(state: State<AppState>, inside: bool) {
     state.is_mouse_inside.store(inside, Ordering::Relaxed);
+}
+
+/// The tab this process was asked to open via its command line flags, if any.
+///
+/// The frontend calls this while mounting so a cold start renders the requested tab on
+/// its first paint instead of showing the clipboard tab and switching 300 ms later.
+#[tauri::command]
+fn get_startup_tab() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    [
+        ("--clipboard", "clipboard"),
+        ("--emoji", "emoji"),
+        ("--kaomoji", "kaomoji"),
+        ("--symbols", "symbols"),
+    ]
+    .into_iter()
+    .find(|(flag, _)| args.iter().any(|arg| arg == flag))
+    .map(|(_, tab)| tab.to_string())
+}
+
+/// The frontend confirms it has painted the tab requested by the last `switch-tab`
+/// event. This releases the deferred single-instance window show, so the window is
+/// presented with the new tab already on screen.
+#[tauri::command]
+fn notify_tab_applied() -> bool {
+    let confirmed = SHOW_GATE.lock().unwrap().confirm();
+    if confirmed {
+        show_debug::log("confirmation received", "notify_tab_applied");
+    } else {
+        show_debug::log("confirmation ignored", "no deferred show pending");
+    }
+    println!(
+        "[WindowController] Frontend confirmed tab applied (deferred show released: {confirmed})"
+    );
+    confirmed
+}
+
+/// Opt-in timing log forwarded from the frontend (`W11C_SHOW_DEBUG=1` only).
+///
+/// The frontend calls this from its `switch-tab` handler so the backend log shows
+/// when the event reached React. Without the environment variable this is a no-op.
+#[tauri::command]
+fn debug_log(message: String) {
+    show_debug::log("frontend handler received", &message);
 }
 
 // --- User Settings Commands ---
@@ -431,47 +532,93 @@ impl WindowController {
     /// Show window pre-selected on `tab`, or switch to that tab if already
     /// visible. NEVER hides/closes the window — for use by the single-instance
     /// IPC handler where the focus-loss race condition can make is_visible()
-    /// transiently false. The IPC_TAB_SWITCH_IN_PROGRESS flag is cleared by
-    /// the caller after this returns.
+    /// transiently false. The IPC_TAB_SWITCH_IN_PROGRESS guard is cleared here
+    /// after the window has actually been shown (the show is deferred until the
+    /// frontend confirms it painted `tab`, so clearing it earlier would let the
+    /// focus-loss handler hide the window again).
     pub fn show_tab(app: &AppHandle, tab: &str) {
         if STARTED_IN_BACKGROUND.load(Ordering::SeqCst) {
             INITIAL_SHOW_ALLOWED.store(true, Ordering::SeqCst);
         }
 
-        let _ = app.emit("switch-tab", tab);
+        let Some(window) = app.get_webview_window("main") else {
+            IPC_TAB_SWITCH_IN_PROGRESS.store(false, Ordering::SeqCst);
+            return;
+        };
 
-        if let Some(window) = app.get_webview_window("main") {
-            if window.is_visible().unwrap_or(false) {
-                // If already visible, the switch-tab emit above is sufficient.
-                // Do NOT update, push, or clear SAVED_WAYLAND_TARGET_WINID or FOCUS_HISTORY.
+        // Already visible: the tab switch happens in place and the compositor does not
+        // re-present an old frame, so emitting the event is enough (existing behaviour).
+        if window.is_visible().unwrap_or(false) {
+            show_debug::arm(&format!(
+                "tab={tab} visible=true (in-place switch, no gate)"
+            ));
+            let _ = app.emit("switch-tab", tab);
+            show_debug::log("event emitted", &format!("switch-tab {tab}"));
+            show_debug::clear();
+            IPC_TAB_SWITCH_IN_PROGRESS.store(false, Ordering::SeqCst);
+            return;
+        }
+
+        // Hidden window: arm the confirmation gate *before* emitting so a fast frontend
+        // answer cannot be lost, then wait for it before showing. Without this, show()
+        // presents the frame WebKit already had (the previously selected tab) and the
+        // requested tab only appears a frame or two later — the visible flash.
+        show_debug::arm(&format!("tab={tab} visible=false"));
+        let (generation, confirmation) = SHOW_GATE.lock().unwrap().arm();
+        let _ = app.emit("switch-tab", tab);
+        show_debug::log("event emitted", &format!("switch-tab {tab}"));
+
+        let app = app.clone();
+        std::thread::spawn(move || {
+            // Returns early on confirmation, after the timeout if the frontend never
+            // answers. Either way the popup is not left hidden.
+            match confirmation.recv_timeout(SHOW_TAB_CONFIRM_TIMEOUT) {
+                Ok(()) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    show_debug::log("timeout fired", "showing without frontend confirmation");
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    show_debug::log("superseded", "newer request owns the show");
+                }
+            }
+
+            if !SHOW_GATE.lock().unwrap().finish(generation) {
+                // A newer tab request superseded this show; that request owns the show
+                // and will clear the IPC guard itself (and re-arm the debug timer).
                 return;
             }
-            // Window is hidden (either intentionally or due to IPC race).
-            // Save the currently focused window so paste still works after show,
-                // BUT only if this isn't an inter-tab switch race condition.
-                if !IPC_TAB_SWITCH_IN_PROGRESS.load(Ordering::SeqCst) {
-                    if is_wayland() {
-                        wayland_save_focused_window_id();
-                    } else {
-                        save_focused_window();
-                    }
-                }
 
-                // Cleanup old items
-                if let Some(state) = app.try_state::<AppState>() {
-                    let settings = UserSettingsManager::new().load();
-                    let interval_in_minutes = settings.auto_delete_interval_in_minutes();
-                    let mut manager = state.clipboard_manager.lock();
-                    if manager.cleanup_old_items(interval_in_minutes) {
-                        manager.save_history();
-                        let _ = app.emit("history-cleared", ());
+            if let Some(window) = app.get_webview_window("main") {
+                if !window.is_visible().unwrap_or(false) {
+                    // Save the target window (same as before; skipped for the IPC path
+                    // while the guard is held).
+                    if !IPC_TAB_SWITCH_IN_PROGRESS.load(Ordering::SeqCst) {
+                        if is_wayland() {
+                            wayland_save_focused_window_id();
+                        } else {
+                            save_focused_window();
+                        }
                     }
-                }
 
-                // Forwarded shortcut: `spawn-at` already placed and clamped the new window, so
-                // do not snap it again (the snap has no screen-edge clamp).
-                Self::position_and_show(&window, app, false);
-        }
+                    // Immediate cleanup of outdated items before showing
+                    if let Some(state) = app.try_state::<AppState>() {
+                        let settings = UserSettingsManager::new().load();
+                        let interval_in_minutes = settings.auto_delete_interval_in_minutes();
+                        let mut manager = state.clipboard_manager.lock();
+                        if manager.cleanup_old_items(interval_in_minutes) {
+                            manager.save_history();
+                            let _ = app.emit("history-cleared", ());
+                        }
+                    }
+
+                    // Forwarded shortcut: `spawn-at` already placed and clamped the new
+                    // window, so do not snap it again (the snap has no screen-edge clamp).
+                    Self::position_and_show(&window, &app, false);
+                }
+            }
+            show_debug::clear();
+            IPC_TAB_SWITCH_IN_PROGRESS.store(false, Ordering::SeqCst);
+        });
     }
 
     pub fn hide(app: &AppHandle) {
@@ -499,6 +646,14 @@ impl WindowController {
         let always_on_top = UserSettingsManager::new().load().always_on_top;
 
         if is_wayland_session {
+            show_debug::log(
+                "window.show() called",
+                if snap_to_cursor {
+                    "tray/menu path"
+                } else {
+                    "deferred shortcut path"
+                },
+            );
             let _ = window.show();
             let _ = window.set_always_on_top(true); // compositor hint (best-effort)
             // On Wayland, avoid window.set_focus() as it triggers Mutter's Focus Stealing Prevention toast.
@@ -517,6 +672,14 @@ impl WindowController {
                 });
             }
         } else {
+            show_debug::log(
+                "window.show() called",
+                if snap_to_cursor {
+                    "tray/menu path"
+                } else {
+                    "deferred shortcut path"
+                },
+            );
             let _ = window.show();
             let _ = window.set_focus();
         }
@@ -894,18 +1057,14 @@ fn main() {
     // Check if --settings flag is present (for first instance startup)
     let open_settings_on_start = args.iter().any(|arg| arg == "--settings");
 
-    // Check tab flags (open with a specific tab selected)
-    let open_emoji_on_start    = args.iter().any(|arg| arg == "--emoji");
-    let open_clipboard_on_start = args.iter().any(|arg| arg == "--clipboard");
-    let open_kaomoji_on_start  = args.iter().any(|arg| arg == "--kaomoji");
-    let open_symbols_on_start  = args.iter().any(|arg| arg == "--symbols");
+    // The tab requested on a cold start (--clipboard/--emoji/--kaomoji/--symbols) is not
+    // emitted from here: the frontend reads it synchronously through the get_startup_tab
+    // command while mounting, so the first frame it paints is already the right tab.
+    // Emitting it after a delay (as this used to) made the window show the default
+    // clipboard tab first and jump to the requested one.
 
     // Clone for use in setup closure
-    let start_in_background_clone  = start_in_background;
-    let open_emoji_on_start_clone    = open_emoji_on_start;
-    let open_clipboard_on_start_clone = open_clipboard_on_start;
-    let open_kaomoji_on_start_clone  = open_kaomoji_on_start;
-    let open_symbols_on_start_clone  = open_symbols_on_start;
+    let start_in_background_clone = start_in_background;
 
     win11_clipboard_history_lib::session::init();
 
@@ -952,26 +1111,24 @@ fn main() {
                 println!(
                     "[SingleInstance] --clipboard flag: switching to clipboard tab in-place"
                 );
+                // show_tab owns IPC_TAB_SWITCH_IN_PROGRESS now: it is cleared after the
+                // window has been shown (or immediately when it is already visible).
                 WindowController::show_tab(app, "clipboard");
-                IPC_TAB_SWITCH_IN_PROGRESS.store(false, Ordering::SeqCst);
             } else if argv.iter().any(|arg| arg == "--emoji") {
                 println!(
                     "[SingleInstance] --emoji flag: switching to emoji tab in-place"
                 );
                 WindowController::show_tab(app, "emoji");
-                IPC_TAB_SWITCH_IN_PROGRESS.store(false, Ordering::SeqCst);
             } else if argv.iter().any(|arg| arg == "--kaomoji") {
                 println!(
                     "[SingleInstance] --kaomoji flag: switching to kaomoji tab in-place"
                 );
                 WindowController::show_tab(app, "kaomoji");
-                IPC_TAB_SWITCH_IN_PROGRESS.store(false, Ordering::SeqCst);
             } else if argv.iter().any(|arg| arg == "--symbols") {
                 println!(
                     "[SingleInstance] --symbols flag: switching to symbols tab in-place"
                 );
                 WindowController::show_tab(app, "symbols");
-                IPC_TAB_SWITCH_IN_PROGRESS.store(false, Ordering::SeqCst);
             } else {
                 IPC_TAB_SWITCH_IN_PROGRESS.store(false, Ordering::SeqCst);
                 println!("[SingleInstance] No tab flag: toggling window");
@@ -1188,43 +1345,9 @@ fn main() {
                 SettingsController::show(&app_handle);
             }
 
-            // If --emoji flag was passed on first startup, emit switch-tab event
-            // This needs a small delay to ensure the frontend is ready
-            if open_emoji_on_start_clone {
-                let app_handle_for_emoji = app_handle.clone();
-                std::thread::spawn(move || {
-                    // Wait for frontend to be ready
-                    std::thread::sleep(std::time::Duration::from_millis(300));
-                    let _ = app_handle_for_emoji.emit("switch-tab", "emoji");
-                });
-            }
-
-            // If --clipboard flag was passed on first startup, emit switch-tab event.
-            if open_clipboard_on_start_clone {
-                let app_handle_for_clipboard = app_handle.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(300));
-                    let _ = app_handle_for_clipboard.emit("switch-tab", "clipboard");
-                });
-            }
-
-            // If --kaomoji flag was passed on first startup, emit switch-tab event.
-            if open_kaomoji_on_start_clone {
-                let app_handle_for_kaomoji = app_handle.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(300));
-                    let _ = app_handle_for_kaomoji.emit("switch-tab", "kaomoji");
-                });
-            }
-
-            // If --symbols flag was passed on first startup, emit switch-tab event.
-            if open_symbols_on_start_clone {
-                let app_handle_for_symbols = app_handle.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(300));
-                    let _ = app_handle_for_symbols.emit("switch-tab", "symbols");
-                });
-            }
+            // Cold-start tab flags are handled by get_startup_tab: the frontend calls it
+            // while mounting and renders that tab on its first paint. See the comment
+            // where the flags used to be parsed above.
 
             // If --background flag was passed, ensure the main window stays hidden
             // This is the primary mechanism for starting minimized to tray
@@ -1274,6 +1397,9 @@ fn main() {
             finish_paste,
             finish_setup, // Register the new command
             set_mouse_state,
+            get_startup_tab,
+            notify_tab_applied,
+            debug_log,
             get_user_settings,
             set_user_settings,
             is_settings_window_visible,
@@ -1300,4 +1426,76 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod show_gate_tests {
+    use super::ShowGate;
+    use std::time::Duration;
+
+    /// The normal path: the frontend confirms the tab and the waiting show is released.
+    #[test]
+    fn confirmation_releases_the_waiting_show() {
+        let mut gate = ShowGate::new();
+        let (generation, receiver) = gate.arm();
+
+        assert!(gate.confirm());
+        assert!(receiver.recv_timeout(Duration::from_millis(100)).is_ok());
+        assert!(gate.finish(generation));
+    }
+
+    /// If the frontend never confirms, the timeout still lets the show proceed (the
+    /// popup must never be left hidden).
+    #[test]
+    fn timeout_still_allows_the_show() {
+        let mut gate = ShowGate::new();
+        let (generation, receiver) = gate.arm();
+
+        assert!(receiver.recv_timeout(Duration::from_millis(5)).is_err());
+        assert!(gate.finish(generation));
+    }
+
+    /// The requested tab can already be the active tab (e.g. Super+. pressed twice on
+    /// the emoji tab). The frontend confirms from the event handler whether or not the
+    /// tab changed, and the gate must release immediately instead of waiting for the
+    /// timeout. The backend has no "did it change" condition, so a confirmation is
+    /// always accepted.
+    #[test]
+    fn confirmation_releases_even_when_the_tab_did_not_change() {
+        let mut gate = ShowGate::new();
+        let (generation, receiver) = gate.arm();
+
+        // The frontend always calls notify_tab_applied from its switch-tab handler.
+        assert!(gate.confirm());
+        assert!(receiver.recv_timeout(Duration::from_millis(100)).is_ok());
+        assert!(gate.finish(generation));
+
+        // A duplicate confirmation is a harmless no-op.
+        assert!(!gate.confirm());
+    }
+
+    /// A newer tab request supersedes an older pending show; only the newest request
+    /// shows the window, so two triggers cannot present two different tabs.
+    #[test]
+    fn a_newer_request_supersedes_the_older_show() {
+        let mut gate = ShowGate::new();
+        let (first, first_receiver) = gate.arm();
+        let (second, second_receiver) = gate.arm();
+
+        // The superseded show's sender was dropped, so its wait ends without confirming.
+        assert!(first_receiver
+            .recv_timeout(Duration::from_millis(5))
+            .is_err());
+        assert!(!gate.finish(first));
+
+        // The newest request still owns (and performs) the show.
+        assert!(gate.confirm());
+        assert!(second_receiver
+            .recv_timeout(Duration::from_millis(100))
+            .is_ok());
+        assert!(gate.finish(second));
+
+        // Nothing is left pending afterwards.
+        assert!(!gate.confirm());
+    }
 }

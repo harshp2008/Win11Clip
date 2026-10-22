@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
+import { flushSync } from 'react-dom'
 import { clsx } from 'clsx'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
@@ -89,9 +90,13 @@ async function applyUIScale(scale: number) {
 
 /**
  * Main Clipboard App Component
+ *
+ * `initialTab` is what this launch asked to open (Super+. and friends on a cold
+ * start). It seeds the state so the first frame is already the requested tab,
+ * instead of rendering the clipboard tab and switching afterwards.
  */
-function ClipboardApp() {
-  const [activeTab, setActiveTab] = useState<ActiveTab>('clipboard')
+function ClipboardApp({ initialTab }: { initialTab?: ActiveTab | null }) {
+  const [activeTab, setActiveTab] = useState<ActiveTab>(initialTab ?? 'clipboard')
   const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
 
@@ -142,11 +147,23 @@ function ClipboardApp() {
       applyUIScale(newSettings.ui_scale)
     })
 
-    // Listen for switch-tab events from Rust (e.g., when Super+. is pressed)
+    // Listen for switch-tab events from Rust (e.g., when Super+. is pressed).
+    // The backend defers showing the hidden window until notify_tab_applied arrives,
+    // so the requested tab has to be committed here, from the event itself:
+    //  - flushSync applies the state update synchronously. A later passive effect
+    //    would not guarantee the tab was applied before the backend shows the window.
+    //  - the confirmation is sent even when the requested tab is already active;
+    //    waiting for an activeTab change would leave the show stuck until the timeout.
     const unlistenSwitchTab = listen<string>('switch-tab', (event) => {
       const tabName = event.payload as ActiveTab
       if (['clipboard', 'emoji', 'kaomoji', 'symbols'].includes(tabName)) {
-        setActiveTab(tabName)
+        invoke('debug_log', { message: `switch-tab ${tabName}` }).catch(() => {})
+        flushSync(() => {
+          setActiveTab(tabName)
+        })
+        invoke('notify_tab_applied').catch((err) => {
+          console.error('Failed to confirm tab applied:', err)
+        })
       }
     })
 

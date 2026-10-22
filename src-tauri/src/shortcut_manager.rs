@@ -204,7 +204,15 @@ pub fn register_global_shortcut() {
         config.command = Box::leak(replaced_cmd.into_boxed_str());
 
         match handler.register(&config) {
-            Ok(_) => println!("[ShortcutManager] \u{2713} Registered '{}'", config.name),
+            Ok(_) => {
+                println!("[ShortcutManager] \u{2713} Registered '{}'", config.name);
+
+                // IBus binds <Super>period to its own emoji picker by default,
+                // which would shadow ours; drop that entry after registering.
+                if config.id == "win11-clipboard-history-emoji" {
+                    crate::ibus_hotkey::ensure_super_period_removed_for_current_user();
+                }
+            }
             Err(e) => eprintln!("[ShortcutManager] \u{2717} Failed '{}': {}", config.name, e),
         }
 

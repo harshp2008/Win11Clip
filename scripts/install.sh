@@ -43,6 +43,11 @@ MANIFEST="$MANIFEST_DIR/installer-manifest"
 BACKUP_DIR="$HOME/.local/state/win11clip-installer/backup"
 # The one-time first-login check (see setup_post_login_enable) and its log live here too.
 FIRSTRUN_SCRIPT="$HOME/.local/state/win11clip-installer/firstrun.sh"
+# Where the original IBus emoji hotkey is saved when remove_ibus_emoji_hotkey has to change it,
+# so uninstall.sh can put the user's own setting back.
+STATE_DIR="$HOME/.local/state/win11clip-installer"
+IBUS_EMOJI_SCHEMA="org.freedesktop.ibus.panel.emoji"
+IBUS_EMOJI_HOTKEY_SAVED="$STATE_DIR/ibus-emoji-hotkey.orig"
 
 # Leftovers of older installers that added gustavosett's upstream package repository.
 LEGACY_APT_LIST="/etc/apt/sources.list.d/gustavosett-clipboard-manager.list"
@@ -1362,6 +1367,54 @@ run_user_gsettings() {
     fi
 }
 
+# Super+. is both IBus's emoji hotkey and the shortcut above, and whoever grabs it first wins:
+# with both installed, the key opens IBus's picker instead of Win11Clip's. Take only
+# '<Super>period' out of the IBus list and save the original raw value for uninstall.sh.
+# Every failure only warns: one desktop setting must never fail the whole install (set -e is on).
+remove_ibus_emoji_hotkey() {
+    command -v gsettings &>/dev/null || return 0
+    run_user_gsettings list-schemas 2>/dev/null | grep -qx "$IBUS_EMOJI_SCHEMA" || return 0
+
+    local hotkey
+    hotkey=$(run_user_gsettings get "$IBUS_EMOJI_SCHEMA" hotkey 2>/dev/null) || return 0
+    [[ "$hotkey" == *"'<Super>period'"* ]] || return 0
+
+    # Save the value we are about to replace, but never overwrite an earlier original.
+    if [ ! -f "$IBUS_EMOJI_HOTKEY_SAVED" ]; then
+        if ! { mkdir -p "$STATE_DIR" && printf '%s\n' "$hotkey" > "$IBUS_EMOJI_HOTKEY_SAVED"; } 2>/dev/null; then
+            rm -f "$IBUS_EMOJI_HOTKEY_SAVED" 2>/dev/null || true
+            warn "Could not save the current IBus emoji hotkey, so it was left unchanged (Super+. may not open Win11Clip)."
+            return 0
+        fi
+    fi
+
+    local entry kept=() filtered=() new_hotkey i
+    while IFS= read -r entry; do
+        if [ -n "$entry" ]; then kept+=("$entry"); fi
+    done < <(printf '%s\n' "$hotkey" | grep -oE "'[^']*'" | tr -d "'")
+
+    for entry in "${kept[@]}"; do
+        if [ "$entry" != "<Super>period" ]; then filtered+=("$entry"); fi
+    done
+
+    new_hotkey="[]"
+    if [ ${#filtered[@]} -gt 0 ]; then
+        new_hotkey="["
+        for i in "${!filtered[@]}"; do
+            new_hotkey+="'${filtered[$i]}'"
+            if [ "$i" -lt $((${#filtered[@]} - 1)) ]; then new_hotkey+=", "; fi
+        done
+        new_hotkey+="]"
+    fi
+
+    if ! run_user_gsettings set "$IBUS_EMOJI_SCHEMA" hotkey "$new_hotkey" 2>/dev/null; then
+        warn "Could not remove Super+period from the IBus emoji hotkey; Super+. may open the wrong picker."
+        return 0
+    fi
+    success "Freed Super+. for Win11Clip's emoji picker (IBus emoji hotkey is now $new_hotkey)."
+    return 0
+}
+
 configure_gnome_shortcuts() {
     if ! command -v gsettings &>/dev/null; then
         return 0
@@ -1451,6 +1504,9 @@ configure_gnome_shortcuts() {
             paths+=("$default_emoji_path")
         fi
     fi
+
+    # The Win11Clip emoji shortcut is in place now; make sure IBus does not keep Super+. for itself.
+    remove_ibus_emoji_hotkey
 
     local formatted_array="["
     for i in "${!paths[@]}"; do
@@ -1655,6 +1711,11 @@ check_if_restart_required() {
 # Main
 main() {
     EXTENSIONS_MODIFIED=0
+    # check_if_restart_required() only asserts 1 and otherwise returns before touching this, so it
+    # has to start defined: a fresh session where all three extensions are already ACTIVE (the
+    # success path) used to leave it unset and `[ "$RESTART_NEEDED" -eq 1 ]` printed
+    # `[: : integer expected` at the end of the install.
+    RESTART_NEEDED=0
 
     echo ""
     echo "╔═══════════════════════════════════════════════════════════╗"

@@ -32,6 +32,11 @@ fi
 # the install and is never removed here.
 MANIFEST="$HOME/.config/win11-clipboard-history/installer-manifest"
 
+# Where install.sh saved the user's original IBus emoji hotkey (it changes it for Super+.).
+STATE_DIR="$HOME/.local/state/win11clip-installer"
+IBUS_EMOJI_SCHEMA="org.freedesktop.ibus.panel.emoji"
+IBUS_EMOJI_HOTKEY_SAVED="$STATE_DIR/ibus-emoji-hotkey.orig"
+
 # ask_yes_no "question" -> 0 only on an explicit yes; defaults to No, and No when non-interactive.
 ask_yes_no() {
     local reply=""
@@ -40,6 +45,67 @@ ask_yes_no() {
     fi
     [[ "$reply" =~ ^[Yy] ]]
 }
+
+# Run gsettings as the desktop user: under sudo it is the user owning the session, not root.
+# The sudo hop is only needed when this script itself runs as root; when it already runs as the
+# user (e.g. `sudo -u "$SUDO_USER" bash uninstall.sh`, which can still carry SUDO_USER in the
+# environment) calling sudo again would be a pointless and failure-prone round trip.
+run_user_gsettings() {
+    if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+        sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" gsettings "$@"
+    else
+        gsettings "$@"
+    fi
+}
+
+# Put back the IBus emoji hotkey install.sh removed so Super+. could open Win11Clip's emoji
+# picker. Does nothing when this installer never changed it; on failure the saved value is kept.
+restore_ibus_emoji_hotkey() {
+    [ -f "$IBUS_EMOJI_HOTKEY_SAVED" ] || return 0
+
+    local saved
+    saved=$(cat "$IBUS_EMOJI_HOTKEY_SAVED" 2>/dev/null) || saved=""
+    if [ -z "$saved" ]; then
+        warn "The saved IBus emoji hotkey is empty; leaving the setting alone."
+        return 0
+    fi
+    if ! command -v gsettings &>/dev/null; then
+        warn "gsettings was not found, so the IBus emoji hotkey was not restored. Saved value kept in $IBUS_EMOJI_HOTKEY_SAVED."
+        return 0
+    fi
+
+    if run_user_gsettings set "$IBUS_EMOJI_SCHEMA" hotkey "$saved" 2>/dev/null; then
+        rm -f "$IBUS_EMOJI_HOTKEY_SAVED" 2>/dev/null || true
+        success "Restored the IBus emoji hotkey (Super+.)."
+    else
+        warn "Could not restore the IBus emoji hotkey. Saved value kept in $IBUS_EMOJI_HOTKEY_SAVED."
+    fi
+    return 0
+}
+
+# Used by `make uninstall`: restore the saved IBus emoji hotkey and exit before any other
+# uninstall step (no prompts, no file removal, no package changes). The normal uninstall path
+# below still calls restore_ibus_emoji_hotkey() at its usual place, unchanged.
+RESTORE_HOTKEY_ONLY=false
+for arg in "$@"; do
+    case "$arg" in
+        --restore-ibus-hotkey-only) RESTORE_HOTKEY_ONLY=true ;;
+    esac
+done
+if [ "$RESTORE_HOTKEY_ONLY" = true ]; then
+    # `sudo make uninstall` runs this as root with HOME=/root; the saved state and the gsettings
+    # database belong to the user who called sudo, so resolve that user's home directory.
+    if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+        SUDO_HOME=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)
+        if [ -n "$SUDO_HOME" ]; then
+            HOME="$SUDO_HOME"
+            STATE_DIR="$HOME/.local/state/win11clip-installer"
+            IBUS_EMOJI_HOTKEY_SAVED="$STATE_DIR/ibus-emoji-hotkey.orig"
+        fi
+    fi
+    restore_ibus_emoji_hotkey
+    exit 0
+fi
 
 # What this run removed and what it left alone, printed at the end.
 SUMMARY_REMOVED=()
@@ -374,6 +440,10 @@ except Exception as e:
 else
     success "Skipped GNOME shortcuts (not on GNOME or gsettings/python3 missing)."
 fi
+
+# install.sh took '<Super>period' out of the IBus emoji hotkey so it would stop clashing with
+# Win11Clip's emoji picker; give the user their original value back before the state dir is cleaned.
+restore_ibus_emoji_hotkey
 
 # 4b. Build tools the installer added for --build (only what the manifest lists)
 if [ -f "$MANIFEST" ]; then

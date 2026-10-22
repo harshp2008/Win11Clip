@@ -7,6 +7,7 @@ import { listen } from '@tauri-apps/api/event'
 import ClipboardApp from './ClipboardApp'
 import SettingsApp from './SettingsApp'
 import { SetupApp } from './setup'
+import type { ActiveTab } from './types/clipboard'
 import './index.css'
 
 /**
@@ -15,6 +16,9 @@ import './index.css'
 function ClipboardAppWithSetup() {
   const [loading, setLoading] = useState(true)
   const [waitingForSetup, setWaitingForSetup] = useState(false)
+  // The tab this launch was asked to open (e.g. Super+. passes --emoji). Fetched
+  // before ClipboardApp mounts so its first render already has the right tab.
+  const [initialTab, setInitialTab] = useState<ActiveTab | null>(null)
 
   useEffect(() => {
     let unlistenSetup: (() => void) | undefined
@@ -30,6 +34,18 @@ function ClipboardAppWithSetup() {
       // Check if this is first run
       try {
         const isFirst = await invoke<boolean>('is_first_run')
+
+        // Which tab this process was started for (cold start from a shortcut). The
+        // backend command reads the process argv, so no event can be missed before
+        // the listener is registered.
+        let startupTab: ActiveTab | null = null
+        try {
+          startupTab = await invoke<ActiveTab | null>('get_startup_tab')
+        } catch (err) {
+          console.error('Failed to read startup tab:', err)
+        }
+        setInitialTab(startupTab)
+
         if (isFirst) {
           setWaitingForSetup(true)
 
@@ -71,7 +87,7 @@ function ClipboardAppWithSetup() {
     return null
   }
 
-  return <ClipboardApp />
+  return <ClipboardApp initialTab={initialTab} />
 }
 
 /**
