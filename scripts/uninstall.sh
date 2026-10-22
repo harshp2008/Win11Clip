@@ -47,8 +47,11 @@ ask_yes_no() {
 }
 
 # Run gsettings as the desktop user: under sudo it is the user owning the session, not root.
+# The sudo hop is only needed when this script itself runs as root; when it already runs as the
+# user (e.g. `sudo -u "$SUDO_USER" bash uninstall.sh`, which can still carry SUDO_USER in the
+# environment) calling sudo again would be a pointless and failure-prone round trip.
 run_user_gsettings() {
-    if [ -n "$SUDO_USER" ]; then
+    if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
         sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" gsettings "$@"
     else
         gsettings "$@"
@@ -79,6 +82,30 @@ restore_ibus_emoji_hotkey() {
     fi
     return 0
 }
+
+# Used by `make uninstall`: restore the saved IBus emoji hotkey and exit before any other
+# uninstall step (no prompts, no file removal, no package changes). The normal uninstall path
+# below still calls restore_ibus_emoji_hotkey() at its usual place, unchanged.
+RESTORE_HOTKEY_ONLY=false
+for arg in "$@"; do
+    case "$arg" in
+        --restore-ibus-hotkey-only) RESTORE_HOTKEY_ONLY=true ;;
+    esac
+done
+if [ "$RESTORE_HOTKEY_ONLY" = true ]; then
+    # `sudo make uninstall` runs this as root with HOME=/root; the saved state and the gsettings
+    # database belong to the user who called sudo, so resolve that user's home directory.
+    if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+        SUDO_HOME=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)
+        if [ -n "$SUDO_HOME" ]; then
+            HOME="$SUDO_HOME"
+            STATE_DIR="$HOME/.local/state/win11clip-installer"
+            IBUS_EMOJI_HOTKEY_SAVED="$STATE_DIR/ibus-emoji-hotkey.orig"
+        fi
+    fi
+    restore_ibus_emoji_hotkey
+    exit 0
+fi
 
 # What this run removed and what it left alone, printed at the end.
 SUMMARY_REMOVED=()

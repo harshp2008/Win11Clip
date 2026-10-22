@@ -44,6 +44,13 @@ check_contains() {
     esac
 }
 
+check_not_contains() {
+    case "$2" in
+        *"$3"*) fail "$1 (expected NOT to contain [$3], got [$2])" ;;
+        *) pass "$1" ;;
+    esac
+}
+
 # True only for a path that really resolves inside /tmp (findmnt catches a /tmp symlink or bind
 # mount that points somewhere else). Everything removed with rm -rf must pass this first.
 SANDBOX=""
@@ -150,6 +157,22 @@ esac
 FAKE_GSETTINGS
 chmod +x "$BIN_DIR/gsettings"
 
+# Never report a running Win11Clip instance: if the restore-only mode ever regressed into the
+# normal uninstall path, nothing may be killed.
+cat > "$BIN_DIR/pgrep" <<'FAKE_PGREP'
+#!/bin/bash
+exit 1
+FAKE_PGREP
+chmod +x "$BIN_DIR/pgrep"
+
+# Any accidental escalation fails instead of running a real privileged command.
+cat > "$BIN_DIR/sudo" <<'FAKE_SUDO'
+#!/bin/bash
+printf '%s\n' "$*" >> "${FAKE_SUDO_LOG:-/dev/null}"
+exit 1
+FAKE_SUDO
+chmod +x "$BIN_DIR/sudo"
+
 # The extracted functions read these as globals; point them into the sandbox, not the real $HOME.
 STATE_DIR="$FAKE_HOME/.local/state/win11clip-installer"
 IBUS_EMOJI_SCHEMA="org.freedesktop.ibus.panel.emoji"
@@ -195,6 +218,16 @@ saved_hotkey() { cat "$IBUS_EMOJI_HOTKEY_SAVED" 2>/dev/null || true; }
 run_fn() {
     RUN_RC=0
     "$@" || RUN_RC=$?
+}
+
+# Run the REAL uninstall.sh in its --restore-ibus-hotkey-only mode (the way `make uninstall`
+# invokes it) with HOME/PATH already pointing into the sandbox, so its fake gsettings is used and
+# none of the normal uninstall steps may run. env -u SUDO_USER keeps the plain-user path even
+# when this harness itself was started from a sudo session; timeout bounds a prompt regression.
+UNINSTALL_OUT=""
+run_uninstall_restore_only() {
+    RUN_RC=0
+    UNINSTALL_OUT=$(env -u SUDO_USER timeout 30 bash "$UNINSTALL_SH" --restore-ibus-hotkey-only 2>&1) || RUN_RC=$?
 }
 
 # --- tests -----------------------------------------------------------------------------------
@@ -258,6 +291,69 @@ check_eq "failed restore exits 0 (only warns)" "$RUN_RC" 0
 check_eq "setting left as it was" "$(current_hotkey)" "[]"
 check_exists "saved file kept for a later retry" "$IBUS_EMOJI_HOTKEY_SAVED"
 check_contains "warning was printed" "${WARNINGS[*]:-}" "Could not restore the IBus emoji hotkey"
+
+printf '\n-- Test 8: uninstall.sh --restore-ibus-hotkey-only restores the saved value end to end\n'
+reset_state
+write_hotkey "[]"
+mkdir -p "$STATE_DIR"
+printf "['<Super>period', '<Super>semicolon']\n" > "$IBUS_EMOJI_HOTKEY_SAVED"
+run_uninstall_restore_only
+check_eq "restore-only mode exits 0" "$RUN_RC" 0
+check_eq "setting restored to the exact original" "$(current_hotkey)" "['<Super>period', '<Super>semicolon']"
+check_not_exists "saved file deleted after restore" "$IBUS_EMOJI_HOTKEY_SAVED"
+check_contains "script reports the restore" "$UNINSTALL_OUT" "Restored the IBus emoji hotkey"
+check_not_contains "normal uninstall never started (no banner)" "$UNINSTALL_OUT" "Win11 Clipboard History - Uninstaller"
+
+printf '\n-- Test 9: --restore-ibus-hotkey-only without a saved file leaves the setting alone\n'
+reset_state
+write_hotkey "['<Super>semicolon']"
+run_uninstall_restore_only
+check_eq "restore-only mode exits 0 without a saved file" "$RUN_RC" 0
+check_eq "setting left untouched" "$(current_hotkey)" "['<Super>semicolon']"
+check_not_exists "no saved file is created" "$IBUS_EMOJI_HOTKEY_SAVED"
+check_not_contains "normal uninstall never started (no banner)" "$UNINSTALL_OUT" "Win11 Clipboard History - Uninstaller"
+
+printf '\n-- Test 10: make uninstall restores the hotkey before removing files\n'
+MAKEFILE="$REPO_ROOT/Makefile"
+RESTORE_LINE=$(grep -nF 'uninstall.sh --restore-ibus-hotkey-only' "$MAKEFILE" | cut -d: -f1 || true)
+FIRST_RM_LINE=$(grep -nF 'rm -f $(DESTDIR)$(BINDIR)/$(APP_NAME)' "$MAKEFILE" | cut -d: -f1 || true)
+check_contains "Makefile uninstall calls the restore helper" "$(cat "$MAKEFILE")" "bash scripts/uninstall.sh --restore-ibus-hotkey-only 2>/dev/null || true"
+if [ -n "$RESTORE_LINE" ] && [ -n "$FIRST_RM_LINE" ] && [ "$RESTORE_LINE" -lt "$FIRST_RM_LINE" ]; then
+    pass "restore runs before the first file removal"
+else
+    fail "restore does not run before the first file removal (restore line [$RESTORE_LINE], first rm line [$FIRST_RM_LINE])"
+fi
+# `make -n` only prints recipes; it never runs the uninstaller.
+MAKE_DRY=$(make -C "$REPO_ROOT" -n uninstall 2>&1 || true)
+check_contains "make -n uninstall prints the restore invocation" "$MAKE_DRY" "bash scripts/uninstall.sh --restore-ibus-hotkey-only"
+
+printf '\n-- Test 11: a non-root SUDO_USER is never escalated through sudo\n'
+# `make uninstall` run by a plain user with SUDO_USER in the environment (e.g. started from a
+# sudo shell) must call gsettings directly, not `sudo -u`. A fake sudo that fails makes any
+# unwanted hop visible; the old code would have warned and kept the saved file.
+if [ "$EUID" -eq 0 ]; then
+    printf 'SKIP: running as root, the plain-user path cannot be exercised here\n'
+else
+    reset_state
+    write_hotkey "[]"
+    mkdir -p "$STATE_DIR"
+    printf "['<Super>period']\n" > "$IBUS_EMOJI_HOTKEY_SAVED"
+    SUDO_LOG="$SANDBOX/sudo.log"
+    : > "$SUDO_LOG"
+    cat > "$BIN_DIR/sudo" <<'FAKE_SUDO'
+#!/bin/bash
+printf '%s\n' "$*" >> "${FAKE_SUDO_LOG:-/dev/null}"
+exit 1
+FAKE_SUDO
+    chmod +x "$BIN_DIR/sudo"
+    RUN_RC=0
+    UNINSTALL_OUT=$(SUDO_USER="$(id -un)" FAKE_SUDO_LOG="$SUDO_LOG" timeout 30 bash "$UNINSTALL_SH" --restore-ibus-hotkey-only 2>&1) || RUN_RC=$?
+    rm -f "$BIN_DIR/sudo"
+    check_eq "plain-user restore-only exits 0" "$RUN_RC" 0
+    check_eq "hotkey restored without sudo" "$(current_hotkey)" "['<Super>period']"
+    check_not_exists "saved file deleted without sudo" "$IBUS_EMOJI_HOTKEY_SAVED"
+    check_eq "sudo was never invoked" "$(cat "$SUDO_LOG")" ""
+fi
 
 # --- results ---------------------------------------------------------------------------------
 printf '\n== Results: %d passed, %d failed ==\n' "$PASS" "$FAIL"

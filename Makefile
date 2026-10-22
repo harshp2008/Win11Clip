@@ -346,6 +346,9 @@ uninstall:
 	@echo -e "$(CYAN)Uninstalling $(APP_NAME)...$(RESET)"
 	@# Stop any running instances first
 	@$(KILL_APP)
+	@# Give back the IBus emoji hotkey install.sh saved, before the state file is cleaned up.
+	@# The script resolves the invoking user under sudo; never fail the uninstall over it.
+	@if [ -f scripts/uninstall.sh ]; then bash scripts/uninstall.sh --restore-ibus-hotkey-only 2>/dev/null || true; fi
 	@# Remove from specified PREFIX path
 	rm -f $(DESTDIR)$(BINDIR)/$(APP_NAME)
 	rm -f $(DESTDIR)$(BINDIR)/spawn-at

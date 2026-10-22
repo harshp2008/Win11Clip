@@ -1711,6 +1711,11 @@ check_if_restart_required() {
 # Main
 main() {
     EXTENSIONS_MODIFIED=0
+    # check_if_restart_required() only asserts 1 and otherwise returns before touching this, so it
+    # has to start defined: a fresh session where all three extensions are already ACTIVE (the
+    # success path) used to leave it unset and `[ "$RESTART_NEEDED" -eq 1 ]` printed
+    # `[: : integer expected` at the end of the install.
+    RESTART_NEEDED=0
 
     echo ""
     echo "╔═══════════════════════════════════════════════════════════╗"
