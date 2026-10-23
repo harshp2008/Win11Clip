@@ -144,7 +144,7 @@ fi
 
 # Update Cargo.lock
 log "Updating Cargo.lock..."
-cd src-tauri && cargo update -p win11-clipboard-history-lib --precise "$VERSION" 2>/dev/null || cargo check 2>/dev/null || true
+cd src-tauri && cargo update -p win11clip --precise "$VERSION" 2>/dev/null || cargo check 2>/dev/null || true
 cd ..
 success "Cargo.lock updated"
 

@@ -1,6 +1,6 @@
-# Contributing to Windows 11 Clipboard History For Linux
+# Contributing to Win11Clip
 
-First off, thank you for considering contributing to Windows 11 Clipboard History For Linux! 🎉
+First off, thank you for considering contributing to Win11Clip! 🎉
 
 ## 📋 Table of Contents
 
@@ -22,12 +22,12 @@ This project and everyone participating in it is governed by our commitment to c
 1. **Fork the repository** on GitHub
 2. **Clone your fork** locally:
    ```bash
-   git clone https://github.com/YOUR-USERNAME/Windows-11-Clipboard-History-For-Linux.git
-   cd win11-clipboard-history-for-linux
+   git clone https://github.com/YOUR-USERNAME/Win11Clip.git
+   cd Win11Clip
    ```
 3. **Add the upstream remote**:
    ```bash
-   git remote add upstream https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux.git
+   git remote add upstream https://github.com/harshp2008/Win11Clip.git
    ```
 
 ## Development Setup
@@ -162,7 +162,7 @@ Before reporting a bug:
    - Steps to reproduce
    - Error messages/logs
 
-Then [create a bug report](https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux/issues/new?template=bug_report.md).
+Then [create a bug report](https://github.com/harshp2008/Win11Clip/issues/new?template=bug_report.md).
 
 ## Suggesting Features
 
@@ -172,11 +172,11 @@ We welcome feature suggestions! Before suggesting:
 2. **Search existing issues** to avoid duplicates
 3. **Consider implementation** - how complex would it be?
 
-Then [create a feature request](https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux/issues/new?template=feature_request.md).
+Then [create a feature request](https://github.com/harshp2008/Win11Clip/issues/new?template=feature_request.md).
 
 ## Questions?
 
-Feel free to [open a discussion](https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux/discussions) for questions or ideas.
+Feel free to [open a discussion](https://github.com/harshp2008/Win11Clip/discussions) for questions or ideas.
 
 ---
 

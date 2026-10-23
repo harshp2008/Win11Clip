@@ -11,26 +11,27 @@ use tauri::{
     AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, State, WebviewWindow,
     WindowEvent,
 };
-use win11_clipboard_history_lib::adaptive_dock;
-use win11_clipboard_history_lib::autostart_manager;
-use win11_clipboard_history_lib::clipboard_manager::{ClipboardContent, ClipboardItem, ClipboardManager};
-use win11_clipboard_history_lib::config_manager::{resolve_window_position, ConfigManager};
-use win11_clipboard_history_lib::emoji_manager::{EmojiManager, EmojiUsage};
-use win11_clipboard_history_lib::focus_manager::x11_robust_activate;
-use win11_clipboard_history_lib::focus_manager::{
+use win11clip_lib::adaptive_dock;
+use win11clip_lib::app_id::{APP_ID, COMMAND_NAME, DATA_DIR_NAME, DISPLAY_NAME};
+use win11clip_lib::autostart_manager;
+use win11clip_lib::clipboard_manager::{ClipboardContent, ClipboardItem, ClipboardManager};
+use win11clip_lib::config_manager::{resolve_window_position, ConfigManager};
+use win11clip_lib::emoji_manager::{EmojiManager, EmojiUsage};
+use win11clip_lib::focus_manager::x11_robust_activate;
+use win11clip_lib::focus_manager::{
     restore_focused_window, save_focused_window,
     wayland_activate_window_id, wayland_clear_saved_window_id, wayland_get_saved_window_id,
     wayland_get_clipboard_window_id, wayland_save_focused_window_id,
     wayland_set_keep_above, gnome_extension_force_pin,
 };
-use win11_clipboard_history_lib::input_simulator::simulate_paste_keystroke;
-use win11_clipboard_history_lib::permission_checker;
-use win11_clipboard_history_lib::rendering_env;
-use win11_clipboard_history_lib::session::is_wayland;
-use win11_clipboard_history_lib::shortcut_manager;
-use win11_clipboard_history_lib::show_debug;
-use win11_clipboard_history_lib::theme_manager::{self, ThemeInfo};
-use win11_clipboard_history_lib::user_settings::{UserSettings, UserSettingsManager};
+use win11clip_lib::input_simulator::simulate_paste_keystroke;
+use win11clip_lib::permission_checker;
+use win11clip_lib::rendering_env;
+use win11clip_lib::session::is_wayland;
+use win11clip_lib::shortcut_manager;
+use win11clip_lib::show_debug;
+use win11clip_lib::theme_manager::{self, ThemeInfo};
+use win11clip_lib::user_settings::{UserSettings, UserSettingsManager};
 
 /// Global flag to track if we started in background mode
 /// This is used to block the initial window show
@@ -367,7 +368,7 @@ async fn paste_gif_from_url(
     // 1. Download (Blocking) - Window stays open to show loading if UI supports it
     let url_clone = url.clone();
     let file_uri = tokio::task::spawn_blocking(move || {
-        win11_clipboard_history_lib::gif_manager::paste_gif_to_clipboard_with_uri(&url_clone)
+        win11clip_lib::gif_manager::paste_gif_to_clipboard_with_uri(&url_clone)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -410,10 +411,10 @@ async fn copy_text_to_clipboard(_state: State<'_, AppState>, text: String) -> Re
 #[tauri::command]
 async fn finish_setup(app: AppHandle) -> Result<(), String> {
     // 0. Register Adaptive Dock bypass state if installed or applicable
-    win11_clipboard_history_lib::adaptive_dock::register_bypass_if_applicable();
+    win11clip_lib::adaptive_dock::register_bypass_if_applicable();
 
     // 1. Mark first run as complete (redundant but safe)
-    win11_clipboard_history_lib::permission_checker::mark_first_run_complete()
+    win11clip_lib::permission_checker::mark_first_run_complete()
         .map_err(|e| e.to_string())?;
 
     // 2. Close setup window
@@ -426,11 +427,11 @@ async fn finish_setup(app: AppHandle) -> Result<(), String> {
     std::thread::spawn(|| {
         let _ = std::process::Command::new("notify-send")
             .arg("-a")
-            .arg("Clipboard History")
+            .arg(DISPLAY_NAME)
             .arg("-i")
-            .arg("win11-clipboard-history")
+            .arg(APP_ID)
             .arg("Setup Complete")
-            .arg("Press Super+V to open Clipboard History.")
+            .arg(format!("Press Super+V to open {}.", DISPLAY_NAME))
             .output();
     });
 
@@ -715,15 +716,15 @@ impl WindowController {
                             let _ = gnome_extension_force_pin();
                         }
                         // Steal focus explicitly via window-calls
-                        let _ = win11_clipboard_history_lib::focus_manager::wayland_activate_window_id(cb_id);
+                        let _ = win11clip_lib::focus_manager::wayland_activate_window_id(cb_id);
                         if snap_to_cursor {
-                            win11_clipboard_history_lib::focus_manager::wayland_snap_to_cursor(cb_id);
+                            win11clip_lib::focus_manager::wayland_snap_to_cursor(cb_id);
                         }
                         break;
                     }
                 }
             } else {
-                if let Err(e) = x11_robust_activate("Clipboard History") {
+                if let Err(e) = x11_robust_activate(DISPLAY_NAME) {
                     eprintln!("[WindowController] X11 activation failed: {}", e);
                     let _ = Self::x11_activate_window_xdotool();
                 }
@@ -741,7 +742,8 @@ impl WindowController {
         use std::process::Command;
 
         let output = Command::new("xdotool")
-            .args(["search", "--name", "Clipboard History"])
+            // Anchored: the name is short enough to occur in other windows' titles.
+            .args(["search", "--name", &format!("^{}$", DISPLAY_NAME)])
             .output()
             .map_err(|e| format!("xdotool search failed: {}", e))?;
 
@@ -906,7 +908,7 @@ impl SettingsController {
                     "settings",
                     WebviewUrl::App("index.html".into()),
                 )
-                .title("Settings - Clipboard History")
+                .title(format!("Settings - {}", DISPLAY_NAME))
                 .inner_size(480.0, 520.0)
                 .resizable(false)
                 .decorations(true)
@@ -980,7 +982,7 @@ fn start_clipboard_watcher(app: AppHandle, clipboard_manager: Arc<Mutex<Clipboar
             if let Ok(text) = manager.get_current_text() {
                 if !text.is_empty() {
                     let text_hash =
-                        win11_clipboard_history_lib::clipboard_manager::calculate_hash(&text);
+                        win11clip_lib::clipboard_manager::calculate_hash(&text);
 
                     if Some(text_hash) != last_text_hash {
                         last_text_hash = Some(text_hash);
@@ -1019,25 +1021,25 @@ fn main() {
     {
         // GTK takes the Wayland app id (and X11 class) from the program name; spawn-at finds the
         // popup by it, so it has to be the same id the shortcuts pass with -c.
-        gtk::glib::set_prgname(Some(win11_clipboard_history_lib::app_id::APP_ID));
+        gtk::glib::set_prgname(Some(win11clip_lib::app_id::APP_ID));
         // Only the human-readable name; it does not change the app id.
-        gtk::glib::set_application_name("Clipboard History");
+        gtk::glib::set_application_name(DISPLAY_NAME);
     }
 
     let args: Vec<String> = std::env::args().collect();
 
     // Handle --version / -v
     if args.iter().any(|arg| arg == "--version" || arg == "-v") {
-        println!("win11-clipboard-history {}", VERSION);
+        println!("{} {}", COMMAND_NAME, VERSION);
         return;
     }
 
     // Handle --help / -h
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("win11-clipboard-history {}", VERSION);
+        println!("{} {}", COMMAND_NAME, VERSION);
         println!();
         println!("USAGE:");
-        println!("    win11-clipboard-history [OPTIONS]");
+        println!("    {} [OPTIONS]", COMMAND_NAME);
         println!();
         println!("OPTIONS:");
         println!("    -h, --help       Show this help message");
@@ -1057,7 +1059,10 @@ fn main() {
     }
 
     // The webview's storage lives in a folder named after the app id; bring the old one along.
-    win11_clipboard_history_lib::app_id::migrate_legacy_webview_data();
+    win11clip_lib::app_id::migrate_legacy_webview_data();
+    // The app's own data, config and cache folders were named after its old name; copy them once,
+    // before settings, history or the first-run flag are read.
+    win11clip_lib::legacy_data::migrate();
 
     // MUST run before Tauri / WebKit init – detects NVIDIA & AppImage and
     // sets WEBKIT_DISABLE_DMABUF_RENDERER=1 when needed.
@@ -1082,12 +1087,12 @@ fn main() {
     // Clone for use in setup closure
     let start_in_background_clone = start_in_background;
 
-    win11_clipboard_history_lib::session::init();
+    win11clip_lib::session::init();
 
     let is_mouse_inside = Arc::new(AtomicBool::new(false));
     let base_dir = dirs::data_local_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("win11-clipboard-history");
+        .join(DATA_DIR_NAME);
 
     // Ensure base directory exists
     if let Err(e) = std::fs::create_dir_all(&base_dir) {
@@ -1164,7 +1169,7 @@ fn main() {
                     // Check if setup was effectively finished.
                     // If the user clicked "Start Using", `finish_setup` would have been called.
                     // `finish_setup` calls `mark_first_run_complete`.
-                    if win11_clipboard_history_lib::permission_checker::is_first_run() {
+                    if win11clip_lib::permission_checker::is_first_run() {
                          println!("[Setup] Setup window closed without completion. Exiting app.");
                          window.app_handle().exit(0);
                     }
@@ -1178,8 +1183,8 @@ fn main() {
             // single-instance plugin has rejected shortcut helper processes.
             // Starting it earlier would hotplug a temporary keyboard every
             // time the desktop launches the shortcut command.
-            win11_clipboard_history_lib::input_simulator::init();
-            win11_clipboard_history_lib::paste_sync::init();
+            win11clip_lib::input_simulator::init();
+            win11clip_lib::paste_sync::init();
 
             // FIRST THING: If started in background mode, immediately hide the main window
             // This runs before anything else to prevent the window from appearing
@@ -1202,7 +1207,7 @@ fn main() {
             let _ = autostart_manager::ensure_spawn_at_autoupdate();
 
             // Register Adaptive Dock bypass state if installed or applicable
-            win11_clipboard_history_lib::adaptive_dock::register_bypass_if_applicable();
+            win11clip_lib::adaptive_dock::register_bypass_if_applicable();
 
             // Run asynchronous background spawn-at update check on startup
             tauri::async_runtime::spawn(async move {
@@ -1227,7 +1232,7 @@ fn main() {
 
 
             // Get temp directory for tray icon (avoids permission issues with XDG_RUNTIME_DIR)
-            let temp_dir = std::env::temp_dir().join("win11-clipboard-history");
+            let temp_dir = std::env::temp_dir().join(DATA_DIR_NAME);
             std::fs::create_dir_all(&temp_dir).ok();
 
             // Initial Dynamic Icon Setup
@@ -1242,7 +1247,7 @@ fn main() {
             let _tray = TrayIconBuilder::with_id("main-tray")
                 .icon(icon)
                 .icon_as_template(use_template_icon)
-                .tooltip("Clipboard History")
+                .tooltip(DISPLAY_NAME)
                 .temp_dir_path(temp_dir)
                 .menu(&menu)
                 .on_menu_event(move |app, event| match event.id.as_ref() {

@@ -16,7 +16,12 @@ use uuid::Uuid;
 
 pub const DEFAULT_MAX_HISTORY_SIZE: usize = 50;
 const PREVIEW_TEXT_MAX_LEN: usize = 100;
-const GIF_CACHE_MARKER: &str = "win11-clipboard-history/gifs/";
+/// Where downloaded GIFs are cached. History items saved before the rename still point into the old
+/// folder (it is kept), so both names mark a cache file.
+const GIF_CACHE_MARKERS: [&str; 2] = [
+    concat!(crate::command_name!(), "/gifs/"),
+    "win11-clipboard-history/gifs/",
+];
 const FILE_URI_PREFIX: &str = "file://";
 
 // --- Helper Functions ---
@@ -392,7 +397,7 @@ impl ClipboardManager {
         }
 
         // Skip internal GIF cache URIs
-        if text.contains(FILE_URI_PREFIX) && text.contains(GIF_CACHE_MARKER) {
+        if text.contains(FILE_URI_PREFIX) && GIF_CACHE_MARKERS.iter().any(|m| text.contains(m)) {
             eprintln!("[ClipboardManager] Skipping GIF cache URI");
             return true;
         }

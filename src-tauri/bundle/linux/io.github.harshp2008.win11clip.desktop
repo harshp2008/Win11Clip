@@ -1,11 +1,11 @@
 [Desktop Entry]
 Version=1.1
 Type=Application
-Name=Clipboard History
+Name=Win11Clip
 GenericName=Clipboard Manager
 Comment=Windows 11-style Clipboard History Manager
-Exec=win11-clipboard-history
-Icon=win11-clipboard-history
+Exec=win11clip
+Icon=io.github.harshp2008.win11clip
 Terminal=false
 Categories=Utility;GTK;
 Keywords=clipboard;history;paste;copy;emoji;gif;

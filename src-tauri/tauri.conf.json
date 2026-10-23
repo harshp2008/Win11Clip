@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "win11-clipboard-history",
+  "productName": "win11clip",
   "version": "0.7.5",
   "identifier": "io.github.harshp2008.win11clip",
   "build": {
@@ -17,7 +17,7 @@
     },
     "windows": [
       {
-        "title": "Clipboard History",
+        "title": "Win11Clip",
         "label": "main",
         "width": 360,
         "height": 480,
@@ -32,7 +32,7 @@
         "focus": true
       },
       {
-        "title": "Setup - Clipboard History",
+        "title": "Setup - Win11Clip",
         "label": "setup",
         "width": 550,
         "height": 650,
@@ -48,7 +48,7 @@
         "focus": true
       },
       {
-        "title": "Settings - Clipboard History",
+        "title": "Settings - Win11Clip",
         "label": "settings",
         "width": 480,
         "height": 520,
@@ -97,13 +97,25 @@
           "polkitd | policykit-1",
           "pkexec | policykit-1"
         ],
+        "provides": [
+          "win11-clipboard-history"
+        ],
+        "conflicts": [
+          "win11-clipboard-history"
+        ],
+        "replaces": [
+          "win11-clipboard-history"
+        ],
+        "desktopTemplate": "bundle/linux/appimage.desktop",
         "files": {
-          "/usr/bin/win11-clipboard-history": "bundle/linux/wrapper.sh",
+          "/usr/bin/win11clip": "bundle/linux/wrapper.sh",
           "/etc/udev/rules.d/99-win11-clipboard-input.rules": "bundle/linux/99-win11-clipboard-input.rules",
-          "/usr/share/applications/win11-clipboard-history.desktop": "bundle/linux/win11-clipboard-history.desktop",
-          "/usr/share/icons/hicolor/128x128/apps/win11-clipboard-history.png": "icons/128x128.png",
-          "/usr/share/icons/hicolor/256x256/apps/win11-clipboard-history.png": "icons/icon.png",
-          "/usr/share/icons/hicolor/scalable/apps/win11-clipboard-history.svg": "icons/icon.svg"
+          "/usr/share/applications/win11clip.desktop": "bundle/linux/win11clip-hidden.desktop",
+          "/usr/share/applications/io.github.harshp2008.win11clip.desktop": "bundle/linux/io.github.harshp2008.win11clip.desktop",
+          "/usr/share/icons/hicolor/128x128/apps/io.github.harshp2008.win11clip.png": "icons/128x128.png",
+          "/usr/share/icons/hicolor/256x256/apps/io.github.harshp2008.win11clip.png": "icons/icon.png",
+          "/usr/share/icons/hicolor/scalable/apps/io.github.harshp2008.win11clip.svg": "icons/icon.svg",
+          "/usr/share/metainfo/io.github.harshp2008.win11clip.metainfo.xml": "bundle/linux/io.github.harshp2008.win11clip.metainfo.xml"
         },
         "postInstallScript": "bundle/linux/postinst.sh",
         "preRemoveScript": "bundle/linux/postrm.sh"
@@ -119,6 +131,25 @@
           "gtk3",
           "libayatana-appindicator-gtk3"
         ],
+        "provides": [
+          "win11-clipboard-history"
+        ],
+        "conflicts": [
+          "win11-clipboard-history"
+        ],
+        "obsoletes": [
+          "win11-clipboard-history"
+        ],
+        "desktopTemplate": "bundle/linux/win11clip-hidden.desktop",
+        "files": {
+          "/usr/bin/win11clip": "bundle/linux/wrapper.sh",
+          "/etc/udev/rules.d/99-win11-clipboard-input.rules": "bundle/linux/99-win11-clipboard-input.rules",
+          "/usr/share/applications/io.github.harshp2008.win11clip.desktop": "bundle/linux/io.github.harshp2008.win11clip.desktop",
+          "/usr/share/icons/hicolor/128x128/apps/io.github.harshp2008.win11clip.png": "icons/128x128.png",
+          "/usr/share/icons/hicolor/256x256/apps/io.github.harshp2008.win11clip.png": "icons/icon.png",
+          "/usr/share/icons/hicolor/scalable/apps/io.github.harshp2008.win11clip.svg": "icons/icon.svg",
+          "/usr/share/metainfo/io.github.harshp2008.win11clip.metainfo.xml": "bundle/linux/io.github.harshp2008.win11clip.metainfo.xml"
+        },
         "postInstallScript": "bundle/linux/postinst.sh",
         "preRemoveScript": "bundle/linux/postrm.sh"
       }

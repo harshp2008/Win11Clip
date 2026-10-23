@@ -1,11 +1,17 @@
-//! The app's own identity.
+//! The app's own identity: what people see, what they type, and what the system calls it.
 //!
 //! `APP_ID` is the Wayland app id (X11 `WM_CLASS`) of every window the app opens, and the Tauri
 //! `identifier`. `spawn-at` finds the popup it has to place by this class, so each shortcut passes
 //! it with `-c`, and the `.desktop` files and the autostart entry carry it as `StartupWMClass`.
 //!
-//! Rust code uses the constant. Places that cannot import it hold a literal copy that a test checks:
-//! `tauri.conf.json`, the bundled `.desktop` file, `scripts/install.sh` and the Setup Wizard text.
+//! `DISPLAY_NAME`, `COMMAND_NAME` and `BINARY_NAME` are the product name, the launcher on the PATH
+//! and the real executable. The `LEGACY_*` constants are the names the app had before it was called
+//! Win11Clip (they are the upstream project's names); they stay so that old installs, shortcuts,
+//! autostart entries and data folders are recognised and migrated, never left behind.
+//!
+//! Rust code uses the constants. Places that cannot import them hold a literal copy that a test
+//! checks: `tauri.conf.json`, `Cargo.toml`, the bundled `.desktop` files, the wrapper, the scripts,
+//! the Makefile, the AUR files and the Setup Wizard text (see `tests/naming.rs`).
 
 use std::fs;
 use std::io;
@@ -19,25 +25,64 @@ macro_rules! app_id {
     };
 }
 
+/// The product name, as people see it (window titles, tray tooltip, desktop entries, notifications).
+#[macro_export]
+macro_rules! display_name {
+    () => {
+        "Win11Clip"
+    };
+}
+
+/// The launcher on the PATH. It is also the package name and the data, config and cache folder name.
+#[macro_export]
+macro_rules! command_name {
+    () => {
+        "win11clip"
+    };
+}
+
 /// This app's id. See the module docs.
 pub const APP_ID: &str = app_id!();
+
+/// The product name, as people see it.
+pub const DISPLAY_NAME: &str = display_name!();
+
+/// The launcher on the PATH (a wrapper script that sets up the environment, then runs the binary).
+pub const COMMAND_NAME: &str = command_name!();
+
+/// The real executable the launcher runs.
+pub const BINARY_NAME: &str = concat!(command_name!(), "-bin");
+
+/// The folder name under the data, config and cache directories.
+pub const DATA_DIR_NAME: &str = command_name!();
+
+/// What the app was called before it was Win11Clip: the launcher, the executable, the data folders
+/// and the window title. Nothing writes these any more; they are only recognised and migrated.
+pub const LEGACY_COMMAND_NAME: &str = "win11-clipboard-history";
+pub const LEGACY_BINARY_NAME: &str = "win11-clipboard-history-bin";
+pub const LEGACY_DATA_DIR_NAME: &str = "win11-clipboard-history";
+pub const LEGACY_DISPLAY_NAME: &str = "Clipboard History";
 
 /// The id this fork inherited from the upstream project, and was released with until it got its own.
 pub const UPSTREAM_APP_ID: &str = "dev.gustavosett.clipboard-history";
 
 /// Window classes older releases used. Entries that carry one of these (autostart entries, dock
 /// states, shortcuts) are Win11Clip's own and get moved to `APP_ID`.
-pub const LEGACY_APP_IDS: &[&str] = &[UPSTREAM_APP_ID, "win11-clipboard-history"];
+pub const LEGACY_APP_IDS: &[&str] = &[UPSTREAM_APP_ID, LEGACY_COMMAND_NAME];
 
-/// Copies the directory `from` to `to`, creating `to`. Symbolic links are skipped.
-fn copy_dir_all(from: &Path, to: &Path) -> io::Result<()> {
+/// Copies the directory `from` to `to`, creating `to`. Symbolic links are skipped, and so are the
+/// entries directly inside `from` whose names are listed in `skip`.
+fn copy_dir_all(from: &Path, to: &Path, skip: &[&str]) -> io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
         let entry = entry?;
+        if skip.iter().any(|name| entry.file_name() == *name) {
+            continue;
+        }
         let file_type = entry.file_type()?;
         let target = to.join(entry.file_name());
         if file_type.is_dir() {
-            copy_dir_all(&entry.path(), &target)?;
+            copy_dir_all(&entry.path(), &target, &[])?;
         } else if file_type.is_file() {
             fs::copy(entry.path(), &target)?;
         }
@@ -45,26 +90,31 @@ fn copy_dir_all(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// On Linux Tauri keeps the webview's storage (localStorage, caches) in `<data dir>/<identifier>`.
-/// The identifier changed, so this copies the old folder to the new one once, when the new one does
-/// not exist yet. The old folder is never moved or deleted. Returns whether a copy was made.
+/// Copies the folder `old_dir` to `new_dir`, once: only when `new_dir` does not exist yet and
+/// `old_dir` does. `old_dir` is never moved or deleted. Returns whether a copy was made.
 ///
 /// The copy goes to a temporary sibling first and is renamed into place, so a second instance that
 /// starts meanwhile never sees a half-copied folder.
-pub fn migrate_legacy_webview_data_in(data_local_dir: &Path) -> io::Result<bool> {
-    let new_dir = data_local_dir.join(APP_ID);
-    let old_dir = data_local_dir.join(UPSTREAM_APP_ID);
+pub fn copy_dir_once(old_dir: &Path, new_dir: &Path, skip: &[&str]) -> io::Result<bool> {
     if new_dir.exists() || !old_dir.is_dir() {
         return Ok(false);
     }
+    let Some(parent) = new_dir.parent() else {
+        return Ok(false);
+    };
+    fs::create_dir_all(parent)?;
 
-    let staging = data_local_dir.join(format!(".{}.migrating-{}", APP_ID, std::process::id()));
+    let staging = parent.join(format!(
+        ".{}.migrating-{}",
+        new_dir.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id()
+    ));
     let _ = fs::remove_dir_all(&staging);
-    if let Err(e) = copy_dir_all(&old_dir, &staging) {
+    if let Err(e) = copy_dir_all(old_dir, &staging, skip) {
         let _ = fs::remove_dir_all(&staging);
         return Err(e);
     }
-    match fs::rename(&staging, &new_dir) {
+    match fs::rename(&staging, new_dir) {
         Ok(()) => Ok(true),
         Err(_) if new_dir.exists() => {
             // Another instance finished first.
@@ -76,6 +126,17 @@ pub fn migrate_legacy_webview_data_in(data_local_dir: &Path) -> io::Result<bool>
             Err(e)
         }
     }
+}
+
+/// On Linux Tauri keeps the webview's storage (localStorage, caches) in `<data dir>/<identifier>`.
+/// The identifier changed, so this copies the old folder to the new one once, when the new one does
+/// not exist yet. The old folder is never moved or deleted. Returns whether a copy was made.
+pub fn migrate_legacy_webview_data_in(data_local_dir: &Path) -> io::Result<bool> {
+    copy_dir_once(
+        &data_local_dir.join(UPSTREAM_APP_ID),
+        &data_local_dir.join(APP_ID),
+        &[],
+    )
 }
 
 /// Runs [`migrate_legacy_webview_data_in`] for the current user. Call it before the webview starts.
@@ -123,7 +184,7 @@ mod tests {
 
     #[test]
     fn bundled_desktop_file_uses_the_app_id_as_window_class() {
-        let desktop = include_str!("../bundle/linux/win11-clipboard-history.desktop");
+        let desktop = include_str!("../bundle/linux/io.github.harshp2008.win11clip.desktop");
         assert!(desktop.contains(&format!("StartupWMClass={APP_ID}\n")));
         for old in LEGACY_APP_IDS {
             assert!(!desktop.contains(&format!("StartupWMClass={old}")));
@@ -141,9 +202,7 @@ mod tests {
     #[test]
     fn setup_wizard_copy_button_command_passes_the_class() {
         let wizard = include_str!("../../src/components/SetupWizard.tsx");
-        assert!(wizard.contains(&format!(
-            "-m 10 -c {APP_ID} win11-clipboard-history --clipboard"
-        )));
+        assert!(wizard.contains(&format!("-m 10 -c {APP_ID} {COMMAND_NAME} --clipboard")));
     }
 
     #[test]

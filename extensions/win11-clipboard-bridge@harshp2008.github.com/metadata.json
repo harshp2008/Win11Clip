@@ -1,7 +1,7 @@
 {
   "uuid": "win11-clipboard-bridge@harshp2008.github.com",
-  "name": "Windows 11 Clipboard History Bridge",
-  "description": "Provides Wayland focus management, Always-On-Top layer retention, and sequential emoji insertion for Windows 11 Clipboard History.",
+  "name": "Win11Clip Bridge",
+  "description": "Provides Wayland focus management, Always-On-Top layer retention, and sequential emoji insertion for Win11Clip.",
   "shell-version": [
     "42",
     "43",
@@ -14,5 +14,5 @@
     "50",
     "51"
   ],
-  "url": "https://github.com/harshp2008/Windows-11-Clipboard-History-For-Linux"
+  "url": "https://github.com/harshp2008/Win11Clip"
 }

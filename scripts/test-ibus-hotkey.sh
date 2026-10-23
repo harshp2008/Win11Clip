@@ -302,7 +302,7 @@ check_eq "restore-only mode exits 0" "$RUN_RC" 0
 check_eq "setting restored to the exact original" "$(current_hotkey)" "['<Super>period', '<Super>semicolon']"
 check_not_exists "saved file deleted after restore" "$IBUS_EMOJI_HOTKEY_SAVED"
 check_contains "script reports the restore" "$UNINSTALL_OUT" "Restored the IBus emoji hotkey"
-check_not_contains "normal uninstall never started (no banner)" "$UNINSTALL_OUT" "Win11 Clipboard History - Uninstaller"
+check_not_contains "normal uninstall never started (no banner)" "$UNINSTALL_OUT" "Win11Clip - Uninstaller"
 
 printf '\n-- Test 9: --restore-ibus-hotkey-only without a saved file leaves the setting alone\n'
 reset_state
@@ -311,7 +311,7 @@ run_uninstall_restore_only
 check_eq "restore-only mode exits 0 without a saved file" "$RUN_RC" 0
 check_eq "setting left untouched" "$(current_hotkey)" "['<Super>semicolon']"
 check_not_exists "no saved file is created" "$IBUS_EMOJI_HOTKEY_SAVED"
-check_not_contains "normal uninstall never started (no banner)" "$UNINSTALL_OUT" "Win11 Clipboard History - Uninstaller"
+check_not_contains "normal uninstall never started (no banner)" "$UNINSTALL_OUT" "Win11Clip - Uninstaller"
 
 printf '\n-- Test 10: make uninstall restores the hotkey before removing files\n'
 MAKEFILE="$REPO_ROOT/Makefile"

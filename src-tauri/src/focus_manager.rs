@@ -200,7 +200,7 @@ fn find_window_by_title(title: &str) -> Option<u32> {
         if let Ok(cookie) = conn.get_property(false, window, net_wm_name, utf8_string, 0, 256) {
             if let Ok(reply) = cookie.reply() {
                 if let Ok(name) = String::from_utf8(reply.value) {
-                    if name.contains(title) {
+                    if window_title_matches(&name, title) {
                         return Some(window);
                     }
                 }
@@ -213,7 +213,7 @@ fn find_window_by_title(title: &str) -> Option<u32> {
         {
             if let Ok(reply) = cookie.reply() {
                 if let Ok(name) = String::from_utf8(reply.value) {
-                    if name.contains(title) {
+                    if window_title_matches(&name, title) {
                         return Some(window);
                     }
                 }
@@ -222,6 +222,13 @@ fn find_window_by_title(title: &str) -> Option<u32> {
     }
 
     None
+}
+
+/// Whether a window called `name` is the one titled `title`. The title has to match exactly: the
+/// product name is short, so it also occurs inside other windows' titles (a browser tab on the
+/// project page, the Settings window) and a substring match would activate the wrong one.
+fn window_title_matches(name: &str, title: &str) -> bool {
+    name == title
 }
 
 /// High-level function to activate a window by title.
@@ -315,7 +322,8 @@ pub fn x11_robust_activate(title: &str) -> Result<(), String> {
 const WC_DEST: &str = "org.gnome.Shell";
 const WC_PATH: &str = "/org/gnome/Shell/Extensions/Windows";
 const WC_IFACE: &str = "org.gnome.Shell.Extensions.Windows";
-const WC_CLIPBOARD_WM_CLASS: &str = "win11-clipboard-history";
+/// The class window-calls reports for the popup of a release from before the app had its own id.
+const WC_CLIPBOARD_WM_CLASS: &str = crate::app_id::LEGACY_COMMAND_NAME;
 
 /// Minimal window descriptor parsed from the JSON returned by
 /// `org.gnome.Shell.Extensions.Windows.List`.
@@ -337,13 +345,17 @@ impl WcWindow {
     pub fn is_clipboard(&self) -> bool {
         let cls = self.wm_class.to_lowercase();
         let title = self.title.to_lowercase();
-        (cls == WC_CLIPBOARD_WM_CLASS
-            || cls == "win11-clipboard-history-bin"
-            || cls == crate::app_id::APP_ID
+        // Every name the popup has had: the current id, command and title, then the older ones.
+        (cls == crate::app_id::APP_ID
+            || cls == crate::app_id::COMMAND_NAME
+            || cls == crate::app_id::BINARY_NAME
+            || cls == WC_CLIPBOARD_WM_CLASS
+            || cls == crate::app_id::LEGACY_BINARY_NAME
             || cls == crate::app_id::UPSTREAM_APP_ID
             || cls.starts_with("win11-clipboard")
             || cls.contains("clipboard-history")
-            || title == "clipboard history")
+            || title == crate::app_id::DISPLAY_NAME.to_lowercase()
+            || title == crate::app_id::LEGACY_DISPLAY_NAME.to_lowercase())
             && !title.contains("settings")
     }
 }
@@ -453,7 +465,7 @@ fn wc_call_winid(method: &str, winid: u64) -> Result<(), String> {
 /// pushes its ID to the 2-window focus stack. Call this just *before* showing
 /// the clipboard window so we capture the correct target application.
 ///
-/// Windows owned by `win11-clipboard-history` are excluded.
+/// Windows owned by Win11Clip itself (under any of its names) are excluded.
 pub fn wayland_save_focused_window_id() {
     match wc_call_list() {
         Ok(windows) => {
@@ -666,7 +678,10 @@ pub fn wayland_snap_to_cursor(cb_id: u64) {
 #[cfg(test)]
 mod is_clipboard_tests {
     use super::WcWindow;
-    use crate::app_id::{APP_ID, LEGACY_APP_IDS};
+    use crate::app_id::{
+        APP_ID, BINARY_NAME, COMMAND_NAME, DISPLAY_NAME, LEGACY_APP_IDS, LEGACY_BINARY_NAME,
+        LEGACY_DISPLAY_NAME,
+    };
 
     fn window(wm_class: &str, title: &str) -> WcWindow {
         WcWindow {
@@ -685,22 +700,51 @@ mod is_clipboard_tests {
 
     #[test]
     fn the_popup_is_recognised_by_the_app_id() {
-        assert!(window(APP_ID, "Clipboard History").is_clipboard());
+        assert!(window(APP_ID, DISPLAY_NAME).is_clipboard());
         assert!(window(APP_ID, "").is_clipboard());
         assert!(window(&APP_ID.to_uppercase(), "").is_clipboard());
     }
 
     #[test]
-    fn every_older_class_is_still_recognised() {
+    fn the_popup_is_recognised_by_the_new_title_and_names() {
+        // Whatever class a compositor reports, the title alone identifies the popup.
+        assert!(window("", DISPLAY_NAME).is_clipboard());
+        assert!(window("", &DISPLAY_NAME.to_uppercase()).is_clipboard());
+        assert!(window(COMMAND_NAME, "").is_clipboard());
+        assert!(window(BINARY_NAME, "").is_clipboard());
+    }
+
+    #[test]
+    fn every_older_class_and_title_is_still_recognised() {
         for old in LEGACY_APP_IDS {
-            assert!(window(old, "Clipboard History").is_clipboard());
+            assert!(window(old, LEGACY_DISPLAY_NAME).is_clipboard());
+            assert!(window(old, DISPLAY_NAME).is_clipboard());
         }
-        assert!(window("win11-clipboard-history-bin", "").is_clipboard());
+        assert!(window(LEGACY_BINARY_NAME, "").is_clipboard());
+        assert!(window("", LEGACY_DISPLAY_NAME).is_clipboard());
+        assert!(window("", "clipboard history").is_clipboard());
     }
 
     #[test]
     fn the_settings_window_and_other_apps_are_not_the_popup() {
-        assert!(!window(APP_ID, "Settings - Clipboard History").is_clipboard());
+        assert!(!window(APP_ID, &format!("Settings - {DISPLAY_NAME}")).is_clipboard());
+        assert!(!window(APP_ID, &format!("Settings - {LEGACY_DISPLAY_NAME}")).is_clipboard());
         assert!(!window("firefox", "Mozilla Firefox").is_clipboard());
+        // The product name inside another window's title does not make it the popup.
+        assert!(!window("firefox", "harshp2008/Win11Clip - GitHub").is_clipboard());
+    }
+
+    #[test]
+    fn the_x11_title_has_to_match_exactly() {
+        use super::window_title_matches;
+        assert!(window_title_matches(DISPLAY_NAME, DISPLAY_NAME));
+        assert!(!window_title_matches(
+            &format!("Settings - {DISPLAY_NAME}"),
+            DISPLAY_NAME
+        ));
+        assert!(!window_title_matches(
+            "harshp2008/Win11Clip - GitHub",
+            DISPLAY_NAME
+        ));
     }
 }

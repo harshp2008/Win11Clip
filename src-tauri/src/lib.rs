@@ -1,4 +1,4 @@
-//! Windows 11 Clipboard History For Linux Library
+//! Win11Clip library
 //! This module re-exports the core functionality for use as a library
 
 pub mod adaptive_dock;
@@ -11,6 +11,7 @@ pub mod focus_manager;
 pub mod gif_manager;
 pub mod ibus_hotkey;
 pub mod input_simulator;
+pub mod legacy_data;
 pub mod paste_sync;
 pub mod permission_checker;
 pub mod rendering_env;

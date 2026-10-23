@@ -1,4 +1,4 @@
-# Windows 11 Clipboard History For Linux - Makefile
+# Win11Clip - Makefile
 # Cross-distro build and install for Ubuntu, Debian, Fedora, and Arch Linux
 #
 # Note: PREFIX defaults to /usr/local for manual installs (Linux convention).
@@ -6,7 +6,13 @@
 #       To install system-wide like a package: sudo make install PREFIX=/usr
 
 SHELL := /bin/bash
-APP_NAME := win11-clipboard-history
+# The command on the PATH; the real binary is $(APP_NAME)-bin, the desktop file and icons are named
+# after the app id. OLD_NAME is what the app was called before it was Win11Clip: `make install`
+# removes its files and `make uninstall` removes them too.
+APP_NAME := win11clip
+APP_ID := io.github.harshp2008.win11clip
+APP_DISPLAY_NAME := Win11Clip
+OLD_NAME := win11-clipboard-history
 PREFIX ?= /usr/local
 LIBDIR := $(PREFIX)/lib
 BINDIR := $(PREFIX)/bin
@@ -15,10 +21,11 @@ DESTDIR ?=
 # `make install` also installs the bundled spawn-at into BINDIR. scripts/install.sh passes
 # INSTALL_SPAWN_AT=no because it manages the copy in ~/.local/bin itself.
 INSTALL_SPAWN_AT ?= yes
-# Stops the running app by exact executable name. `pkill -x $(APP_NAME)-bin` matches nothing: the kernel
-# keeps 15 characters of a process name and procps refuses longer patterns. So take the processes named
-# "win11-clipboard" (the first 15 characters) and compare the executable's real name. Usage: $(KILL_APP) [-9]
-KILL_APP = $(SHELL) -c 'for p in $$(pgrep -x win11-clipboard 2>/dev/null); do n=$$(readlink /proc/$$p/exe 2>/dev/null) || continue; n=$${n% (deleted)}; case "$${n\#\#*/}" in $(APP_NAME)-bin|$(APP_NAME).AppImage) kill $$1 $$p 2>/dev/null;; esac; done; true' kill_app
+# Stops the running app by exact executable name, for the new name and the old one. `pkill -x` with the
+# old names matches nothing: the kernel keeps 15 characters of a process name and procps refuses longer
+# patterns. So take the processes named like the first 15 characters of each name and compare the
+# executable's real name. Usage: $(KILL_APP) [-9]
+KILL_APP = $(SHELL) -c 'for c in win11-clipboard win11clip-bin win11clip.AppIm; do for p in $$(pgrep -x $$c 2>/dev/null); do n=$$(readlink /proc/$$p/exe 2>/dev/null) || continue; n=$${n% (deleted)}; case "$${n\#\#*/}" in $(APP_NAME)-bin|$(APP_NAME).AppImage|$(OLD_NAME)-bin|$(OLD_NAME).AppImage) kill $$1 $$p 2>/dev/null;; esac; done; done; true' kill_app
 
 # Detect distro
 DISTRO := $(shell \
@@ -42,7 +49,7 @@ RED := \033[0;31m
 RESET := \033[0m
 
 .PHONY: all help deps deps-ubuntu deps-debian deps-fedora deps-arch \
-        rust node check-deps test-deps dev build install uninstall clean clean-first-run run \
+        rust node check-deps test-deps dev build install uninstall remove-old-name clean clean-first-run run \
         lint format test release
 
 all: build
@@ -56,7 +63,7 @@ endif
 
 help:
 	@echo -e "$(CYAN)╔════════════════════════════════════════════════════════════════╗$(RESET)"
-	@echo -e "$(CYAN)║     Windows 11 Clipboard History For Linux - Build Commands                   ║$(RESET)"
+	@echo -e "$(CYAN)║     $(APP_DISPLAY_NAME) - Build Commands                                              ║$(RESET)"
 	@echo -e "$(CYAN)╚════════════════════════════════════════════════════════════════╝$(RESET)"
 	@echo ""
 	@echo -e "$(GREEN)Setup:$(RESET)"
@@ -266,7 +273,7 @@ install: install-extension enable-extension
 		exit 1; \
 	fi
 	@# Stop any running instances safely
-	@killall -9 $(APP_NAME)-bin 2>/dev/null || $(KILL_APP) -9
+	@killall -9 $(APP_NAME)-bin $(OLD_NAME)-bin 2>/dev/null || $(KILL_APP) -9
 	@# Install binary to lib directory
 	@mkdir -p $(DESTDIR)$(LIBDIR)/$(APP_NAME)
 	install -Dm755 src-tauri/target/release/$(APP_NAME)-bin $(DESTDIR)$(LIBDIR)/$(APP_NAME)/$(APP_NAME)-bin
@@ -288,8 +295,10 @@ install: install-extension enable-extension
 	chmod +x $(DESTDIR)$(BINDIR)/$(APP_NAME)
 	@if [ -d "$(DESTDIR)/usr/bin" ]; then ln -sf $(DESTDIR)$(BINDIR)/$(APP_NAME) $(DESTDIR)/usr/bin/$(APP_NAME); fi
 	@# Install icons
-	install -Dm644 src-tauri/icons/128x128.png $(DESTDIR)$(DATADIR)/icons/hicolor/128x128/apps/$(APP_NAME).png
-	install -Dm644 src-tauri/icons/icon.png $(DESTDIR)$(DATADIR)/icons/hicolor/256x256/apps/$(APP_NAME).png
+	install -Dm644 src-tauri/icons/128x128.png $(DESTDIR)$(DATADIR)/icons/hicolor/128x128/apps/$(APP_ID).png
+	install -Dm644 src-tauri/icons/icon.png $(DESTDIR)$(DATADIR)/icons/hicolor/256x256/apps/$(APP_ID).png
+	install -Dm644 src-tauri/icons/icon.svg $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/$(APP_ID).svg
+	install -Dm644 src-tauri/bundle/linux/$(APP_ID).metainfo.xml $(DESTDIR)$(DATADIR)/metainfo/$(APP_ID).metainfo.xml
 	@# Create udev rules for input devices and uinput
 	@mkdir -p $(DESTDIR)/etc/udev/rules.d
 	install -Dm644 src-tauri/bundle/linux/99-win11-clipboard-input.rules $(DESTDIR)/etc/udev/rules.d/
@@ -317,7 +326,9 @@ install: install-extension enable-extension
 	fi
 	@# Install desktop entry
 	@mkdir -p $(DESTDIR)$(DATADIR)/applications
-	install -Dm644 src-tauri/bundle/linux/$(APP_NAME).desktop $(DESTDIR)$(DATADIR)/applications/
+	install -Dm644 src-tauri/bundle/linux/$(APP_ID).desktop $(DESTDIR)$(DATADIR)/applications/
+	@# The files of the old name that no package owns (a source build of an earlier version)
+	@$(MAKE) --no-print-directory remove-old-name DESTDIR="$(DESTDIR)" PREFIX="$(PREFIX)"
 	@update-desktop-database $(DESTDIR)$(DATADIR)/applications 2>/dev/null || true
 	@gtk-update-icon-cache -f -t $(DESTDIR)$(DATADIR)/icons/hicolor 2>/dev/null || true
 	@# Configure spawn-at auto-update on login (only on live system, not in DESTDIR/fakeroot).
@@ -334,7 +345,7 @@ install: install-extension enable-extension
 	@echo -e "$(GREEN)✓ Installed successfully$(RESET)"
 	@echo ""
 	@echo -e "$(GREEN)╔════════════════════════════════════════════════════════════════╗$(RESET)"
-	@echo -e "$(GREEN)║     ✓ Installed! Find 'Clipboard History' in your app menu.    ║$(RESET)"
+	@echo -e "$(GREEN)║     ✓ Installed! Find '$(APP_DISPLAY_NAME)' in your app menu.             ║$(RESET)"
 	@echo -e "$(GREEN)╚════════════════════════════════════════════════════════════════╝$(RESET)"
 	@echo ""
 	@echo "The app will guide you through setup on first run."
@@ -342,8 +353,32 @@ install: install-extension enable-extension
 	@echo -e "$(YELLOW)Please log out and log back in once to enable the GNOME Shell companion extension.$(RESET)"
 	@echo ""
 
+# Removes the files of the old name ($(OLD_NAME)) that no package owns: the launcher, the library
+# folder, the menu entry and the icons that a source build of an earlier version put in place, and the
+# /usr/bin link. Files an installed package owns are left to that package. User data is never touched.
+remove-old-name:
+	@for f in $(DESTDIR)$(BINDIR)/$(OLD_NAME) $(DESTDIR)$(BINDIR)/$(OLD_NAME)-bin \
+	    $(DESTDIR)/usr/bin/$(OLD_NAME) $(DESTDIR)/usr/bin/$(OLD_NAME)-bin \
+	    $(DESTDIR)/usr/local/bin/$(OLD_NAME) $(DESTDIR)/usr/local/bin/$(OLD_NAME)-bin \
+	    $(DESTDIR)$(DATADIR)/applications/$(OLD_NAME).desktop \
+	    $(DESTDIR)/usr/local/share/applications/$(OLD_NAME).desktop $(DESTDIR)/usr/share/applications/$(OLD_NAME).desktop \
+	    $(DESTDIR)$(DATADIR)/icons/hicolor/128x128/apps/$(OLD_NAME).png $(DESTDIR)$(DATADIR)/icons/hicolor/256x256/apps/$(OLD_NAME).png \
+	    $(DESTDIR)/usr/local/share/icons/hicolor/128x128/apps/$(OLD_NAME).png $(DESTDIR)/usr/local/share/icons/hicolor/256x256/apps/$(OLD_NAME).png \
+	    $(DESTDIR)/usr/share/icons/hicolor/128x128/apps/$(OLD_NAME).png $(DESTDIR)/usr/share/icons/hicolor/256x256/apps/$(OLD_NAME).png; do \
+		if [ -e "$$f" ] || [ -L "$$f" ]; then \
+			if [ -z "$(DESTDIR)" ] && command -v dpkg >/dev/null 2>&1 && dpkg -S "$$f" >/dev/null 2>&1; then continue; fi; \
+			rm -f "$$f" && echo "Removed $$f (old name $(OLD_NAME))"; \
+		fi; \
+	done
+	@for d in $(DESTDIR)$(LIBDIR)/$(OLD_NAME) $(DESTDIR)/usr/local/lib/$(OLD_NAME); do \
+		if [ -d "$$d" ]; then \
+			if [ -z "$(DESTDIR)" ] && command -v dpkg >/dev/null 2>&1 && dpkg -S "$$d/$(OLD_NAME)-bin" >/dev/null 2>&1; then continue; fi; \
+			rm -rf "$$d" && echo "Removed $$d (old name $(OLD_NAME))"; \
+		fi; \
+	done
+
 uninstall:
-	@echo -e "$(CYAN)Uninstalling $(APP_NAME)...$(RESET)"
+	@echo -e "$(CYAN)Uninstalling $(APP_NAME) (and the old name $(OLD_NAME), if it is installed)...$(RESET)"
 	@# Stop any running instances first
 	@$(KILL_APP)
 	@# Give back the IBus emoji hotkey install.sh saved, before the state file is cleaned up.
@@ -362,17 +397,21 @@ uninstall:
 		rm -f $(DESTDIR)/usr/bin/$(APP_NAME) 2>/dev/null || true; \
 		rm -rf $(DESTDIR)/usr/lib/$(APP_NAME) 2>/dev/null || true; \
 	fi
-	rm -f $(DESTDIR)$(DATADIR)/icons/hicolor/128x128/apps/$(APP_NAME).png
-	rm -f $(DESTDIR)$(DATADIR)/icons/hicolor/256x256/apps/$(APP_NAME).png
-	rm -f $(DESTDIR)$(DATADIR)/applications/$(APP_NAME).desktop
+	rm -f $(DESTDIR)$(DATADIR)/icons/hicolor/128x128/apps/$(APP_ID).png
+	rm -f $(DESTDIR)$(DATADIR)/icons/hicolor/256x256/apps/$(APP_ID).png
+	rm -f $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/$(APP_ID).svg
+	rm -f $(DESTDIR)$(DATADIR)/applications/$(APP_ID).desktop
+	rm -f $(DESTDIR)$(DATADIR)/metainfo/$(APP_ID).metainfo.xml
 	@# Clean icons from all common share paths
-	rm -f $(DESTDIR)/usr/local/share/icons/hicolor/128x128/apps/$(APP_NAME).png 2>/dev/null || true
-	rm -f $(DESTDIR)/usr/local/share/icons/hicolor/256x256/apps/$(APP_NAME).png 2>/dev/null || true
-	rm -f $(DESTDIR)/usr/share/icons/hicolor/128x128/apps/$(APP_NAME).png 2>/dev/null || true
-	rm -f $(DESTDIR)/usr/share/icons/hicolor/256x256/apps/$(APP_NAME).png 2>/dev/null || true
+	rm -f $(DESTDIR)/usr/local/share/icons/hicolor/128x128/apps/$(APP_ID).png 2>/dev/null || true
+	rm -f $(DESTDIR)/usr/local/share/icons/hicolor/256x256/apps/$(APP_ID).png 2>/dev/null || true
+	rm -f $(DESTDIR)/usr/share/icons/hicolor/128x128/apps/$(APP_ID).png 2>/dev/null || true
+	rm -f $(DESTDIR)/usr/share/icons/hicolor/256x256/apps/$(APP_ID).png 2>/dev/null || true
 	@# Clean desktop entries from all common paths
-	rm -f $(DESTDIR)/usr/local/share/applications/$(APP_NAME).desktop 2>/dev/null || true
-	rm -f $(DESTDIR)/usr/share/applications/$(APP_NAME).desktop 2>/dev/null || true
+	rm -f $(DESTDIR)/usr/local/share/applications/$(APP_ID).desktop 2>/dev/null || true
+	rm -f $(DESTDIR)/usr/share/applications/$(APP_ID).desktop 2>/dev/null || true
+	@# Everything the old name left that no package owns
+	@$(MAKE) --no-print-directory remove-old-name DESTDIR="$(DESTDIR)" PREFIX="$(PREFIX)"
 	rm -f $(DESTDIR)/etc/udev/rules.d/99-win11-clipboard-input.rules
 	rm -f $(DESTDIR)/etc/modules-load.d/uinput.conf
 	rm -f $(DESTDIR)/etc/modules-load.d/win11-clipboard.conf
@@ -386,7 +425,7 @@ uninstall:
 	@# Clean up registered custom keybindings in gsettings
 	@if [ -n "$$SUDO_USER" ] && command -v gsettings >/dev/null 2>&1; then \
 		sudo -u $$SUDO_USER env "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$$(id -u $$SUDO_USER)/bus" bash -c '\
-		for id in win11-clipboard-history win11-clipboard-history-alt win11-clipboard-history-emoji; do \
+		for id in win11-clipboard-history win11-clipboard-history-alt win11-clipboard-history-emoji win11clip win11clip-alt win11clip-emoji; do \
 			gsettings reset "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/$$id/" name 2>/dev/null || true; \
 			gsettings reset "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/$$id/" command 2>/dev/null || true; \
 			gsettings reset "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/$$id/" binding 2>/dev/null || true; \
@@ -395,7 +434,8 @@ uninstall:
 	@# Remove autostart entries for the user
 	@if [ -n "$$SUDO_USER" ]; then \
 		AUTOSTART_DIR=$$(getent passwd $$SUDO_USER | cut -d: -f6)/.config/autostart; \
-		rm -f "$$AUTOSTART_DIR/$(APP_NAME).desktop" 2>/dev/null || true; \
+		rm -f "$$AUTOSTART_DIR/$(APP_ID).desktop" 2>/dev/null || true; \
+		rm -f "$$AUTOSTART_DIR/$(OLD_NAME).desktop" 2>/dev/null || true; \
 		rm -f "$$AUTOSTART_DIR/win11clip-firstrun.desktop" 2>/dev/null || true; \
 		rm -f "$$AUTOSTART_DIR/spawn-at-autoupdate.desktop" 2>/dev/null || true; \
 		rm -f "$$AUTOSTART_DIR/spawn-at-update-check.desktop" 2>/dev/null || true; \
@@ -403,7 +443,8 @@ uninstall:
 	@# Also remove for all users
 	@for user_home in /home/*; do \
 		if [ -d "$$user_home" ]; then \
-			rm -f "$$user_home/.config/autostart/$(APP_NAME).desktop" 2>/dev/null || true; \
+			rm -f "$$user_home/.config/autostart/$(APP_ID).desktop" 2>/dev/null || true; \
+			rm -f "$$user_home/.config/autostart/$(OLD_NAME).desktop" 2>/dev/null || true; \
 			rm -f "$$user_home/.config/autostart/win11clip-firstrun.desktop" 2>/dev/null || true; \
 			rm -f "$$user_home/.config/autostart/spawn-at-autoupdate.desktop" 2>/dev/null || true; \
 			rm -f "$$user_home/.config/autostart/spawn-at-update-check.desktop" 2>/dev/null || true; \
@@ -412,6 +453,8 @@ uninstall:
 	@update-desktop-database $(DESTDIR)$(DATADIR)/applications 2>/dev/null || true
 	@gtk-update-icon-cache -f -t $(DESTDIR)$(DATADIR)/icons/hicolor 2>/dev/null || true
 	@echo -e "$(GREEN)✓ Uninstalled successfully$(RESET)"
+	@echo "Your clipboard history and settings were NOT deleted: ~/.config/$(APP_NAME), ~/.local/share/$(APP_NAME) and"
+	@echo "~/.cache/$(APP_NAME) (and the same folders named $(OLD_NAME), if you used the old name) are still there."
 
 # ============================================================================
 # Code Quality
@@ -433,7 +476,7 @@ format:
 
 clean-first-run:
 	@echo -e "$(CYAN)Cleaning first-run config...$(RESET)"
-	@rm -f ~/.config/win11-clipboard-history/setup.json
+	@rm -f ~/.config/$(APP_NAME)/setup.json
 	@echo -e "$(GREEN)✓ First-run config cleaned (Setup Wizard will show on next launch)$(RESET)"
 
 clean: clean-first-run

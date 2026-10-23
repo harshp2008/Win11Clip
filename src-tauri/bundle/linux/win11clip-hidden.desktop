@@ -1,0 +1,8 @@
+# Intentionally hidden. Tauri's bundler always writes <productName>.desktop (here win11clip.desktop)
+# next to the files below, and this is that file. Win11Clip's real menu entry is
+# io.github.harshp2008.win11clip.desktop, named after the app id (the window class), so this one is
+# marked Hidden: desktops treat a Hidden entry as not installed and show Win11Clip once.
+[Desktop Entry]
+Type=Application
+Name=Win11Clip
+Hidden=true

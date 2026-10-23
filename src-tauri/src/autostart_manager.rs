@@ -3,25 +3,19 @@
 // but we need to use the wrapper script that sets up the correct environment variables
 // (TAURI_TRAY, etc.) for proper tray icon functionality.
 
-use crate::app_id::APP_ID;
+use crate::app_id::{APP_ID, BINARY_NAME, COMMAND_NAME, LEGACY_BINARY_NAME, LEGACY_COMMAND_NAME};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const DESKTOP_ENTRY_TEMPLATE: &str = concat!(
-    r#"[Desktop Entry]
-Type=Application
-Version=1.1
-Name=Clipboard History
-GenericName=Clipboard Manager
-Comment=Windows 11-style Clipboard History Manager
-Exec=sh -c 'sleep 5 && "EXEC_PATH" --background'
-Icon=win11-clipboard-history
-Terminal=false
-Categories=Utility;
-StartupNotify=false
-X-GNOME-Autostart-enabled=true
-StartupWMClass="#,
+    "[Desktop Entry]\nType=Application\nVersion=1.1\nName=",
+    crate::display_name!(),
+    "\nGenericName=Clipboard Manager\nComment=Windows 11-style Clipboard History Manager\n",
+    r#"Exec=sh -c 'sleep 5 && "EXEC_PATH" --background'"#,
+    "\nIcon=",
+    crate::app_id!(),
+    "\nTerminal=false\nCategories=Utility;\nStartupNotify=false\nX-GNOME-Autostart-enabled=true\nStartupWMClass=",
     crate::app_id!(),
     "\n"
 );
@@ -48,14 +42,31 @@ fn get_autostart_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|p| p.join("autostart"))
 }
 
-/// Get the path to the autostart desktop file
-fn get_autostart_file() -> Option<PathBuf> {
-    get_autostart_dir().map(|p| p.join("win11-clipboard-history.desktop"))
+/// The autostart entry in `dir`. It is named after the app id, like the menu entry.
+fn autostart_file_in(dir: &Path) -> PathBuf {
+    dir.join(format!("{APP_ID}.desktop"))
 }
 
-/// Read the content of the autostart desktop file
-fn read_autostart_content() -> Option<String> {
-    get_autostart_file().and_then(|p| fs::read_to_string(p).ok())
+/// The autostart entry an install from before the rename wrote into `dir`.
+fn legacy_autostart_file_in(dir: &Path) -> PathBuf {
+    dir.join(format!("{LEGACY_COMMAND_NAME}.desktop"))
+}
+
+/// Get the path to the autostart desktop file
+fn get_autostart_file() -> Option<PathBuf> {
+    get_autostart_dir().map(|p| autostart_file_in(&p))
+}
+
+/// Get the path to the autostart desktop file of the old name
+fn get_legacy_autostart_file() -> Option<PathBuf> {
+    get_autostart_dir().map(|p| legacy_autostart_file_in(&p))
+}
+
+/// Whether an autostart entry's content switches itself off.
+fn is_switched_off(content: &str) -> bool {
+    content
+        .lines()
+        .any(|line| line.trim() == "X-GNOME-Autostart-enabled=false")
 }
 
 /// Determines the correct executable path to use in the autostart entry.
@@ -63,10 +74,10 @@ fn read_autostart_content() -> Option<String> {
 fn get_exec_path() -> String {
     // Priority order for the wrapper/binary
     let possible_paths = [
-        "/usr/bin/win11-clipboard-history", // Wrapper installed by .deb/.rpm
-        "/usr/local/bin/win11-clipboard-history", // Manual install with PREFIX=/usr/local
-        "/usr/bin/win11-clipboard-history-bin", // Direct binary (fallback)
-        "/usr/local/bin/win11-clipboard-history-bin", // Direct binary local (fallback)
+        format!("/usr/bin/{COMMAND_NAME}"), // Wrapper installed by .deb/.rpm
+        format!("/usr/local/bin/{COMMAND_NAME}"), // Manual install with PREFIX=/usr/local
+        format!("/usr/bin/{BINARY_NAME}"),  // Direct binary (fallback)
+        format!("/usr/local/bin/{BINARY_NAME}"), // Direct binary local (fallback)
     ];
 
     for path in &possible_paths {
@@ -78,7 +89,7 @@ fn get_exec_path() -> String {
     // Last resort: use current executable
     std::env::current_exe()
         .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "win11-clipboard-history".to_string())
+        .unwrap_or_else(|_| COMMAND_NAME.to_string())
 }
 
 /// The autostart entry for the executable `exec_path`.
@@ -86,12 +97,20 @@ fn render_entry(exec_path: &str) -> String {
     DESKTOP_ENTRY_TEMPLATE.replace("EXEC_PATH", exec_path)
 }
 
-/// Writes the autostart entry for `exec_path` to `file`, replacing what is there.
-fn write_autostart_file(file: &Path, exec_path: &str) -> Result<(), String> {
+/// Writes the autostart entry for `exec_path` to `file`, replacing what is there. `enabled` false
+/// writes the entry switched off, which is how an entry the user had switched off is carried over.
+fn write_autostart_file(file: &Path, exec_path: &str, enabled: bool) -> Result<(), String> {
+    let mut entry = render_entry(exec_path);
+    if !enabled {
+        entry = entry.replace(
+            "X-GNOME-Autostart-enabled=true",
+            "X-GNOME-Autostart-enabled=false",
+        );
+    }
     let mut out =
         fs::File::create(file).map_err(|e| format!("Failed to create autostart file: {}", e))?;
 
-    out.write_all(render_entry(exec_path).as_bytes())
+    out.write_all(entry.as_bytes())
         .map_err(|e| format!("Failed to write autostart file: {}", e))
 }
 
@@ -103,9 +122,11 @@ fn migration_reasons(content: &str) -> Vec<&'static str> {
         .find(|line| line.trim_start().starts_with("Exec="));
     let mut reasons = Vec::new();
 
-    // The Exec= line is using the old binary path directly
-    if exec_line.is_some_and(|line| line.contains("win11-clipboard-history-bin")) {
-        reasons.push("Migrating from old binary path to wrapper...");
+    // The Exec= line still runs the command or the binary of the old name
+    if exec_line
+        .is_some_and(|line| line.contains(LEGACY_COMMAND_NAME) || line.contains(LEGACY_BINARY_NAME))
+    {
+        reasons.push("Moving the entry from the old command to the Win11Clip one...");
     }
     // The Exec= line is missing the sleep (for multi-distro compatibility); sleep in exec is used
     // instead of X-GNOME-Autostart-Delay because it works everywhere
@@ -143,8 +164,47 @@ fn migrate_autostart_file(file: &Path, exec_path: &str) -> Result<bool, String> 
     for reason in reasons {
         println!("[Autostart] {}", reason);
     }
-    write_autostart_file(file, exec_path)?;
+    write_autostart_file(file, exec_path, !is_switched_off(&content))?;
     Ok(true)
+}
+
+/// Brings the autostart entries in `dir` up to date and returns whether it changed anything.
+///
+/// - An entry of the old name (`win11-clipboard-history.desktop`) with no entry of the new name is
+///   carried over: the new entry is written first (switched off if the old one was), and only then
+///   is the old file removed.
+/// - An old entry next to a new one is removed, so the app does not start twice at login.
+/// - An existing new entry is rewritten only when `migration_reasons` finds something wrong.
+///
+/// Running it again changes nothing.
+fn migrate_autostart_dir(dir: &Path, exec_path: &str) -> Result<bool, String> {
+    let new_file = autostart_file_in(dir);
+    let old_file = legacy_autostart_file_in(dir);
+    let mut changed = false;
+
+    if new_file.exists() {
+        changed |= migrate_autostart_file(&new_file, exec_path)?;
+    } else if old_file.exists() {
+        let old = fs::read_to_string(&old_file).unwrap_or_default();
+        write_autostart_file(&new_file, exec_path, !is_switched_off(&old))?;
+        println!(
+            "[Autostart] Carried the autostart entry of the old name over to {}",
+            new_file.display()
+        );
+        changed = true;
+    }
+
+    // Only once the new entry is in place.
+    if old_file.exists() && new_file.is_file() {
+        fs::remove_file(&old_file)
+            .map_err(|e| format!("Failed to remove the old autostart entry: {}", e))?;
+        println!(
+            "[Autostart] Removed the old autostart entry {}",
+            old_file.display()
+        );
+        changed = true;
+    }
+    Ok(changed)
 }
 
 /// Enable autostart by creating a .desktop file in ~/.config/autostart/
@@ -160,7 +220,11 @@ pub fn autostart_enable() -> Result<(), String> {
     // Get the correct executable path (wrapper preferred)
     let exec_path = get_exec_path();
 
-    write_autostart_file(&autostart_file, &exec_path)?;
+    write_autostart_file(&autostart_file, &exec_path, true)?;
+    // An entry of the old name next to the new one would start the app twice.
+    if let Some(old) = get_legacy_autostart_file() {
+        let _ = fs::remove_file(old);
+    }
 
     println!(
         "[Autostart] Enabled autostart with exec path: {}",
@@ -178,9 +242,19 @@ pub fn autostart_enable() -> Result<(), String> {
 pub fn autostart_disable() -> Result<(), String> {
     let autostart_file = get_autostart_file().ok_or("Could not determine autostart file path")?;
 
-    if autostart_file.exists() {
-        fs::remove_file(&autostart_file)
-            .map_err(|e| format!("Failed to remove autostart file: {}", e))?;
+    // Both names: disabling has to hold whichever one a previous install wrote.
+    let mut removed = false;
+    for file in [Some(autostart_file), get_legacy_autostart_file()]
+        .into_iter()
+        .flatten()
+    {
+        if file.exists() {
+            fs::remove_file(&file)
+                .map_err(|e| format!("Failed to remove autostart file: {}", e))?;
+            removed = true;
+        }
+    }
+    if removed {
         println!("[Autostart] Disabled autostart");
     }
 
@@ -191,20 +265,21 @@ pub fn autostart_disable() -> Result<(), String> {
 #[tauri::command]
 pub fn autostart_is_enabled() -> Result<bool, String> {
     let autostart_file = get_autostart_file().ok_or("Could not determine autostart file path")?;
+    let legacy_file =
+        get_legacy_autostart_file().ok_or("Could not determine autostart file path")?;
 
-    if !autostart_file.exists() {
+    // The entry of the new name wins; one of the old name still counts until it is carried over.
+    let file = if autostart_file.exists() {
+        autostart_file
+    } else if legacy_file.exists() {
+        legacy_file
+    } else {
         return Ok(false);
-    }
-
-    // Check if the file has X-GNOME-Autostart-enabled=false
-    let content = read_autostart_content().unwrap_or_default();
+    };
 
     // If the file exists and doesn't explicitly disable itself, it's enabled
-    let is_disabled = content
-        .lines()
-        .any(|line| line.trim() == "X-GNOME-Autostart-enabled=false");
-
-    Ok(!is_disabled)
+    let content = fs::read_to_string(file).unwrap_or_default();
+    Ok(!is_switched_off(&content))
 }
 
 /// Migrate from the old tauri-plugin-autostart entry to the new custom one
@@ -212,14 +287,11 @@ pub fn autostart_is_enabled() -> Result<bool, String> {
 /// or is missing the startup delay for proper tray initialization
 #[tauri::command]
 pub fn autostart_migrate() -> Result<bool, String> {
-    let autostart_file = get_autostart_file().ok_or("Could not determine autostart file path")?;
+    let autostart_dir = get_autostart_dir().ok_or("Could not determine autostart file path")?;
 
-    if !autostart_file.exists() {
-        return Ok(false); // Nothing to migrate
-    }
-
-    // Re-enable with correct path, sleep, --background and window class
-    let migrated = migrate_autostart_file(&autostart_file, &get_exec_path())?;
+    // The entry of the old name is carried over to the new one; an existing entry gets the correct
+    // path, sleep, --background and window class. Without either there is nothing to migrate.
+    let migrated = migrate_autostart_dir(&autostart_dir, &get_exec_path())?;
 
     // Ensure spawn-at auto-update is configured even if no Win11Clip migration was needed
     let _ = ensure_spawn_at_autoupdate();
@@ -294,7 +366,10 @@ mod spawn_at_entry_tests {
 #[cfg(test)]
 mod wm_class_tests {
     use super::*;
-    use crate::app_id::{APP_ID, LEGACY_APP_IDS};
+    use crate::app_id::{DISPLAY_NAME, LEGACY_APP_IDS};
+
+    const EXEC: &str = "/usr/bin/win11clip";
+    const OLD_EXEC: &str = "/usr/bin/win11-clipboard-history";
 
     struct TempDir(PathBuf);
 
@@ -313,41 +388,83 @@ mod wm_class_tests {
         }
     }
 
+    /// The entry the previous release wrote: old name, old command, and the app id (or an older
+    /// class) as window class.
+    fn old_entry(class: &str) -> String {
+        format!(
+            "[Desktop Entry]\nType=Application\nVersion=1.1\nName=Clipboard History\nGenericName=Clipboard Manager\nComment=Windows 11-style Clipboard History Manager\nExec=sh -c 'sleep 5 && \"{OLD_EXEC}\" --background'\nIcon=win11-clipboard-history\nTerminal=false\nCategories=Utility;\nStartupNotify=false\nX-GNOME-Autostart-enabled=true\nStartupWMClass={class}\n"
+        )
+    }
+
     #[test]
-    fn template_carries_the_app_id_as_window_class() {
-        let entry = render_entry("/usr/bin/win11-clipboard-history");
+    fn template_carries_the_new_name_icon_and_window_class() {
+        let entry = render_entry(EXEC);
+        assert!(entry.lines().any(|l| l == format!("Name={DISPLAY_NAME}")));
+        assert!(entry.lines().any(|l| l == format!("Icon={APP_ID}")));
         assert!(entry
             .lines()
             .any(|l| l == format!("StartupWMClass={APP_ID}")));
+        assert!(entry.contains(&format!("\"{EXEC}\" --background")));
         assert!(entry.ends_with('\n'));
         for old in LEGACY_APP_IDS {
             assert!(!entry.contains(&format!("StartupWMClass={old}")));
         }
+        assert!(!entry.contains("Clipboard History\nGeneric"));
+        assert!(!entry.contains(LEGACY_COMMAND_NAME));
+    }
+
+    #[test]
+    fn the_entry_is_named_after_the_app_id_and_the_old_one_after_the_old_command() {
+        let dir = Path::new("/c/autostart");
+        assert_eq!(
+            autostart_file_in(dir),
+            Path::new("/c/autostart/io.github.harshp2008.win11clip.desktop")
+        );
+        assert_eq!(
+            legacy_autostart_file_in(dir),
+            Path::new("/c/autostart/win11-clipboard-history.desktop")
+        );
     }
 
     #[test]
     fn a_fresh_entry_needs_no_migration() {
-        assert!(migration_reasons(&render_entry("/usr/bin/win11-clipboard-history")).is_empty());
+        assert!(migration_reasons(&render_entry(EXEC)).is_empty());
+    }
+
+    #[test]
+    fn an_entry_that_still_runs_the_old_command_is_rewritten_once() {
+        let tmp = TempDir::new();
+        let file = autostart_file_in(&tmp.0);
+        for exec in [
+            OLD_EXEC,
+            "/usr/local/bin/win11-clipboard-history",
+            "/usr/bin/win11-clipboard-history-bin",
+        ] {
+            fs::write(&file, render_entry(exec)).unwrap();
+            assert!(migrate_autostart_file(&file, EXEC).unwrap());
+            assert_eq!(fs::read_to_string(&file).unwrap(), render_entry(EXEC));
+            assert!(!migrate_autostart_file(&file, EXEC).unwrap());
+        }
     }
 
     #[test]
     fn entries_with_an_old_or_no_class_are_migrated_once_and_then_left_alone() {
         let tmp = TempDir::new();
         for old_class in LEGACY_APP_IDS {
-            let file = tmp.0.join("win11-clipboard-history.desktop");
-            let old = render_entry("/usr/bin/win11-clipboard-history").replace(APP_ID, old_class);
+            let file = tmp.0.join("entry.desktop");
+            let old = render_entry(EXEC).replace(APP_ID, old_class);
             fs::write(&file, &old).unwrap();
 
             // First run rewrites it ...
-            assert!(migrate_autostart_file(&file, "/usr/bin/win11-clipboard-history").unwrap());
+            assert!(migrate_autostart_file(&file, EXEC).unwrap());
             let migrated = fs::read_to_string(&file).unwrap();
             assert!(migrated.contains(&format!("StartupWMClass={APP_ID}\n")));
             assert!(!migrated.contains(&format!("StartupWMClass={old_class}")));
-            assert_eq!(migrated, render_entry("/usr/bin/win11-clipboard-history"));
+            assert_eq!(migrated, render_entry(EXEC));
 
             // ... and the next ones do nothing (no loop).
-            assert!(!migrate_autostart_file(&file, "/usr/bin/win11-clipboard-history").unwrap());
-            assert!(!migrate_autostart_file(&file, "/usr/bin/win11-clipboard-history").unwrap());
+            assert!(!migrate_autostart_file(&file, EXEC).unwrap());
+            assert!(!migrate_autostart_file(&file, EXEC).unwrap());
             assert_eq!(fs::read_to_string(&file).unwrap(), migrated);
         }
 
@@ -361,5 +478,83 @@ mod wm_class_tests {
         fs::write(&file, no_class).unwrap();
         assert!(migrate_autostart_file(&file, "/usr/bin/x").unwrap());
         assert!(!migrate_autostart_file(&file, "/usr/bin/x").unwrap());
+    }
+
+    #[test]
+    fn the_old_named_entry_is_carried_over_and_then_removed() {
+        let tmp = TempDir::new();
+        let old = legacy_autostart_file_in(&tmp.0);
+        let new = autostart_file_in(&tmp.0);
+        fs::write(&old, old_entry(APP_ID)).unwrap();
+
+        assert!(migrate_autostart_dir(&tmp.0, EXEC).unwrap());
+        assert_eq!(fs::read_to_string(&new).unwrap(), render_entry(EXEC));
+        assert!(!old.exists());
+
+        // Idempotent: the second start changes nothing and the old name does not come back.
+        assert!(!migrate_autostart_dir(&tmp.0, EXEC).unwrap());
+        assert!(!migrate_autostart_dir(&tmp.0, EXEC).unwrap());
+        assert_eq!(fs::read_to_string(&new).unwrap(), render_entry(EXEC));
+        assert!(!old.exists());
+    }
+
+    #[test]
+    fn an_old_entry_the_user_switched_off_stays_off() {
+        let tmp = TempDir::new();
+        let off = old_entry(APP_ID).replace(
+            "X-GNOME-Autostart-enabled=true",
+            "X-GNOME-Autostart-enabled=false",
+        );
+        fs::write(legacy_autostart_file_in(&tmp.0), off).unwrap();
+
+        migrate_autostart_dir(&tmp.0, EXEC).unwrap();
+        let carried = fs::read_to_string(autostart_file_in(&tmp.0)).unwrap();
+        assert!(is_switched_off(&carried));
+        assert!(carried.contains(&format!("\"{EXEC}\" --background")));
+        // A later migration of the switched-off entry keeps it off.
+        assert!(!migrate_autostart_dir(&tmp.0, EXEC).unwrap());
+    }
+
+    #[test]
+    fn an_old_entry_next_to_a_current_one_is_removed_so_the_app_starts_once() {
+        let tmp = TempDir::new();
+        fs::write(autostart_file_in(&tmp.0), render_entry(EXEC)).unwrap();
+        fs::write(legacy_autostart_file_in(&tmp.0), old_entry(APP_ID)).unwrap();
+
+        assert!(migrate_autostart_dir(&tmp.0, EXEC).unwrap());
+        assert!(!legacy_autostart_file_in(&tmp.0).exists());
+        assert_eq!(
+            fs::read_to_string(autostart_file_in(&tmp.0)).unwrap(),
+            render_entry(EXEC)
+        );
+    }
+
+    #[test]
+    fn the_old_entry_is_kept_when_the_new_one_cannot_be_written() {
+        let tmp = TempDir::new();
+        let old = legacy_autostart_file_in(&tmp.0);
+        fs::write(&old, old_entry(APP_ID)).unwrap();
+        // A directory where the new entry should go: writing it fails.
+        fs::create_dir(autostart_file_in(&tmp.0)).unwrap();
+
+        assert!(migrate_autostart_dir(&tmp.0, EXEC).is_err());
+        assert!(
+            old.exists(),
+            "the old entry must survive a failed migration"
+        );
+    }
+
+    #[test]
+    fn nothing_to_migrate_in_an_empty_directory() {
+        let tmp = TempDir::new();
+        assert!(!migrate_autostart_dir(&tmp.0, EXEC).unwrap());
+        assert!(!autostart_file_in(&tmp.0).exists());
+    }
+
+    #[test]
+    fn the_exec_candidates_use_the_new_command_and_binary() {
+        // get_exec_path() lists /usr/bin/<command> first; the names come from app_id.
+        assert_eq!(COMMAND_NAME, "win11clip");
+        assert_eq!(BINARY_NAME, "win11clip-bin");
     }
 }
