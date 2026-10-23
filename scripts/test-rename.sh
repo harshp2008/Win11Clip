@@ -628,6 +628,11 @@ check_exists "the fake install put the uninstaller in place" "$SYSROOT/usr/local
 check_exists "the fake install put the old-name link in place" "$SYSROOT/usr/local/bin/win11-clipboard-uninstall"
 check_exists "the fake install put the metainfo under /usr/local/share" "$SYSROOT/usr/local/share/metainfo/io.github.harshp2008.win11clip.metainfo.xml"
 check_exists "the fake install put the first-login script in place" "$STATE_DIR/firstrun.sh"
+# The first-login script starts the app only as a warm-up, so it must never open a window.
+FIRSTRUN_LAUNCHES=$(grep -E '^[[:space:]]*\(?win11clip([[:space:]]|$)' "$STATE_DIR/firstrun.sh" || true)
+check_contains "the first-login script starts the app" "$FIRSTRUN_LAUNCHES" "win11clip"
+check_eq "every app launch in the first-login script passes --background" \
+    "$(printf '%s\n' "$FIRSTRUN_LAUNCHES" | grep -v -- '--background' || true)" ""
 EXPECTED=$(printf '%s\n' "$BEFORE" | while IFS= read -r f; do if allowed_after_uninstall "$f"; then printf '%s\n' "$f"; fi; done)
 
 : > "$SANDBOX/sudo.log"

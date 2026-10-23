@@ -1728,7 +1728,7 @@ notify() { # urgency title body
 if [ "$CHECK_ONLY" = 0 ]; then
     sleep 3
     for u in $UUIDS; do gnome-extensions enable "$u" >/dev/null 2>&1; done
-    (win11clip >/dev/null 2>&1 &)
+    (win11clip --background >/dev/null 2>&1 &)
     # spawn-at's own login update (10 s after login) and the app's startup update may rewrite the
     # spawn-at extension after the Shell has loaded it; judge only once they are done (at most ~70 s).
     sleep 12
