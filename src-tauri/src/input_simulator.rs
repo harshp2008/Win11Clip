@@ -503,7 +503,7 @@ impl UinputDevice {
             ff_effects_max: u32,
         }
 
-        let device_name = format!("win11-clipboard-paste-{}", std::process::id());
+        let device_name = format!("win11clip-paste-{}", std::process::id());
         let mut setup = UinputSetup {
             id: libc::input_id {
                 bustype: 0x03,

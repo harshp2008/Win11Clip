@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.harshp2008.win11clip</id>
+  <name>Win11Clip</name>
+  <summary>Windows 11-style clipboard history for Linux</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.harshp2008">
+    <name>harshp2008</name>
+  </developer>
+  <description>
+    <p>
+      Win11Clip is a clipboard history manager with the look and the shortcuts of the Windows 11
+      clipboard: Super+V opens the history at the mouse pointer, Super+. opens the emoji picker.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.harshp2008.win11clip.desktop</launchable>
+  <url type="homepage">https://github.com/harshp2008/Win11Clip</url>
+  <url type="bugtracker">https://github.com/harshp2008/Win11Clip/issues</url>
+  <content_rating type="oars-1.1" />
+  <provides>
+    <binary>win11clip</binary>
+  </provides>
+  <categories>
+    <category>Utility</category>
+  </categories>
+</component>

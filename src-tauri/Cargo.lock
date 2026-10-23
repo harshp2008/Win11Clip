@@ -5830,7 +5830,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "win11-clipboard-history-lib"
+name = "win11clip"
 version = "0.7.5"
 dependencies = [
  "arboard",

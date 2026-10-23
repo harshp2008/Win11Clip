@@ -17,7 +17,7 @@ use std::time::Duration;
 
 // --- Constants ---
 
-const APP_CACHE_DIR: &str = "win11-clipboard-history/gifs";
+const APP_CACHE_DIR: &str = concat!(crate::command_name!(), "/gifs");
 const MIME_URI_LIST: &str = "text/uri-list";
 const DOWNLOAD_TIMEOUT: u64 = 10;
 
@@ -254,7 +254,7 @@ mod tests {
     fn test_cache_resolution() {
         let dir = GifCache::get_dir();
         assert!(dir.is_ok());
-        assert!(dir.unwrap().ends_with("win11-clipboard-history/gifs"));
+        assert!(dir.unwrap().ends_with("win11clip/gifs"));
     }
 
     #[test]

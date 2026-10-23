@@ -283,7 +283,7 @@ function KeyboardShortcutsSection({ isDark }: KeyboardShortcutsSectionProps) {
 }
 
 /**
- * Settings App Component - Configuration UI for Win11 Clipboard History
+ * Settings App Component - Configuration UI for Win11Clip
  */
 function SettingsApp() {
   const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS)

@@ -18,9 +18,11 @@ pub const ADAPTIVE_DOCK_EXTENSION_UUID: &str = "adaptive-dock@harsh.patel";
 /// The older ones stay so that entries already in `dock-app-states.json` remain valid.
 pub const WIN11CLIP_APP_IDS: &[&str] = &[
     crate::app_id::APP_ID,
+    crate::app_id::COMMAND_NAME,
+    crate::app_id::BINARY_NAME,
     crate::app_id::UPSTREAM_APP_ID,
-    "win11-clipboard-history",
-    "win11-clipboard-history-bin",
+    crate::app_id::LEGACY_COMMAND_NAME,
+    crate::app_id::LEGACY_BINARY_NAME,
 ];
 
 /// The bypass mode string expected by Adaptive Dock.
@@ -276,7 +278,22 @@ mod tests {
         for old in crate::app_id::LEGACY_APP_IDS {
             assert!(WIN11CLIP_APP_IDS.contains(old));
         }
-        assert!(WIN11CLIP_APP_IDS.contains(&"win11-clipboard-history-bin"));
+        assert!(WIN11CLIP_APP_IDS.contains(&crate::app_id::LEGACY_BINARY_NAME));
+    }
+
+    #[test]
+    fn win11clip_app_ids_hold_the_new_names_and_the_old_ones() {
+        // Written out on purpose: a rename that drops one of these loses a user's Bypass setting.
+        for id in [
+            "io.github.harshp2008.win11clip",
+            "win11clip",
+            "win11clip-bin",
+            "dev.gustavosett.clipboard-history",
+            "win11-clipboard-history",
+            "win11-clipboard-history-bin",
+        ] {
+            assert!(WIN11CLIP_APP_IDS.contains(&id), "missing {id}");
+        }
     }
 
     #[test]

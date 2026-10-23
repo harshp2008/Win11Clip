@@ -303,7 +303,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
           isDark ? 'text-win11-text-primary' : 'text-win11Light-text-primary'
         )}
       >
-        Welcome to Clipboard History
+        Welcome to Win11Clip
       </h2>
       <p
         className={clsx(
@@ -523,7 +523,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
           </div>
           <Button
             id="copy-path"
-            onClick={() => copyToClipboard('spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c io.github.harshp2008.win11clip win11-clipboard-history --clipboard')}
+            onClick={() => copyToClipboard('spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c io.github.harshp2008.win11clip win11clip --clipboard')}
           >
             <span className="flex items-center justify-center gap-2">
               <Copy className="w-4 h-4" />

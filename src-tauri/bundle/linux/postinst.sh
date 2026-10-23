@@ -1,9 +1,9 @@
 #!/bin/bash
-# Post-installation script for win11-clipboard-history
+# Post-installation script for Win11Clip
 # Only system-level tasks. NON-INTERACTIVE.
 set -e
 
-log() { echo "[win11-clipboard] $1"; }
+log() { echo "[win11clip] $1"; }
 
 # 1. Ensure uinput module loads on boot
 if [ -f /etc/modules-load.d/win11-clipboard.conf ]; then

@@ -1,0 +1,14 @@
+# Template for the desktop entry Tauri generates (deb.desktopTemplate). Only the AppImage keeps the
+# generated file: Exec and Icon name the binary inside the AppImage, where the win11clip launcher does
+# not exist. The deb and rpm replace it with win11clip-hidden.desktop and install
+# io.github.harshp2008.win11clip.desktop instead.
+[Desktop Entry]
+Type=Application
+Name=Win11Clip
+Comment=Windows 11-style Clipboard History Manager
+Categories={{categories}}
+Exec={{exec}}
+Icon={{icon}}
+Terminal=false
+StartupWMClass=io.github.harshp2008.win11clip
+StartupNotify=true
