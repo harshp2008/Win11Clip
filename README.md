@@ -101,8 +101,10 @@ On GNOME, `<Super>v` is bound by default to `focus-active-notification` (Message
 
 ### Manual Keybinding Setup (If Needed)
 If you are running a standalone window manager (Sway, Hyprland, i3, etc.) or prefer manual configuration (use the full path, `~/.local/bin/spawn-at`, if that folder is not on the `PATH` your session starts with):
-- **Clipboard History:** `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard`
-- **Emoji Picker:** `spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --emoji`
+- **Clipboard History:** `spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c io.github.harshp2008.win11clip win11-clipboard-history --clipboard`
+- **Emoji Picker:** `spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c io.github.harshp2008.win11clip win11-clipboard-history --emoji`
+
+`-c io.github.harshp2008.win11clip` is the app's own Wayland app id (X11 `WM_CLASS`). It tells `spawn-at` which window is the popup, so keep it in every shortcut you write by hand. Shortcuts from earlier releases (without `-c`, or with the old `dev.gustavosett.clipboard-history` class) are replaced by the installer and the Setup Wizard, never duplicated.
 
 ---
 
@@ -203,6 +205,6 @@ make dev
 
 ## 📜 Credits & License
 
-- **Core Base & Visual Concept:** Originates from [gustavosett/Windows-11-Clipboard-History-For-Linux](https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux) under the MIT License.
+- **Core Base & Visual Concept:** Forked from [gustavosett/Windows-11-Clipboard-History-For-Linux](https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux) under the MIT License. The upstream copyright notice stays in [LICENSE](LICENSE).
 - **Wayland Hardening, Spawn-At Positioning & WebKitGTK 4.1 Migration:** [Harsh P. (harshp2008)](https://github.com/harshp2008).
 - **License:** [MIT License](LICENSE)

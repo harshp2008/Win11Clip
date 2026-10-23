@@ -49,6 +49,11 @@ STATE_DIR="$HOME/.local/state/win11clip-installer"
 IBUS_EMOJI_SCHEMA="org.freedesktop.ibus.panel.emoji"
 IBUS_EMOJI_HOTKEY_SAVED="$STATE_DIR/ibus-emoji-hotkey.orig"
 
+# The app's own identity: its Wayland app id / X11 class and the Tauri identifier. The one place in
+# the repo that holds it is src-tauri/src/app_id.rs; a Rust test fails when this copy drifts.
+# Every shortcut passes it to spawn-at with -c, because spawn-at finds the popup window by this class.
+APP_ID="io.github.harshp2008.win11clip"
+
 # Leftovers of older installers that added gustavosett's upstream package repository.
 LEGACY_APT_LIST="/etc/apt/sources.list.d/gustavosett-clipboard-manager.list"
 LEGACY_APT_KEY="/usr/share/keyrings/gustavosett-clipboard-manager-archive-keyring.gpg"
@@ -672,7 +677,7 @@ Exec=$HOME/.local/bin/win11-clipboard-history
 Icon=win11-clipboard-history
 Terminal=false
 Categories=Utility;
-StartupWMClass=dev.gustavosett.clipboard-history
+StartupWMClass=$APP_ID
 EOF
     
     # Ask about udev rules for AppImage (optional - maintains portability)
@@ -1428,8 +1433,8 @@ configure_gnome_shortcuts() {
 
     local sa_exe
     sa_exe=$(spawn_at_shortcut_exe)
-    local target_cb_cmd="$sa_exe spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard"
-    local target_emoji_cmd="$sa_exe spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --emoji"
+    local target_cb_cmd="$sa_exe spawn --anchor cursor -o -15 -15 -m 10 -c $APP_ID win11-clipboard-history --clipboard"
+    local target_emoji_cmd="$sa_exe spawn --anchor cursor -o -15 -15 -m 10 -c $APP_ID win11-clipboard-history --emoji"
 
     local raw_bindings
     raw_bindings=$(run_user_gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null || echo "[]")

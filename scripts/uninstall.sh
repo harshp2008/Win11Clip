@@ -425,7 +425,9 @@ try:
         try:
             cmd = subprocess.check_output(["gsettings", "get", base_schema, "command"], text=True).strip().strip("\x27\"")
             name = subprocess.check_output(["gsettings", "get", base_schema, "name"], text=True).strip().strip("\x27\"")
-            if any(k in cmd for k in ["win11-clipboard-history", "spawn-at"]) or "Clipboard History" in name:
+            # Old-form commands (no -c, or the upstream class) and the current one (-c io.github.harshp2008.win11clip)
+            # all run win11-clipboard-history through spawn-at, so these tokens match every form.
+            if any(k in cmd for k in ["win11-clipboard-history", "io.github.harshp2008.win11clip", "dev.gustavosett.clipboard-history", "spawn-at"]) or "Clipboard History" in name:
                 subprocess.run(["gsettings", "reset-recursively", base_schema], check=False)
             else:
                 keep.append(path)

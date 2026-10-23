@@ -15,8 +15,10 @@ use std::path::{Path, PathBuf};
 pub const ADAPTIVE_DOCK_EXTENSION_UUID: &str = "adaptive-dock@harsh.patel";
 
 /// The identifiers used by Win11Clip across various execution modes and packaging formats.
+/// The older ones stay so that entries already in `dock-app-states.json` remain valid.
 pub const WIN11CLIP_APP_IDS: &[&str] = &[
-    "dev.gustavosett.clipboard-history",
+    crate::app_id::APP_ID,
+    crate::app_id::UPSTREAM_APP_ID,
     "win11-clipboard-history",
     "win11-clipboard-history-bin",
 ];
@@ -269,6 +271,38 @@ mod tests {
     }
 
     #[test]
+    fn win11clip_app_ids_hold_the_app_id_and_every_older_class() {
+        assert!(WIN11CLIP_APP_IDS.contains(&crate::app_id::APP_ID));
+        for old in crate::app_id::LEGACY_APP_IDS {
+            assert!(WIN11CLIP_APP_IDS.contains(old));
+        }
+        assert!(WIN11CLIP_APP_IDS.contains(&"win11-clipboard-history-bin"));
+    }
+
+    #[test]
+    fn existing_entries_for_the_old_ids_stay_and_the_new_id_is_added() {
+        let temp_dir = TempDir::new();
+        let file_path = temp_dir.path().join("dock-app-states.json");
+        fs::write(
+            &file_path,
+            r#"{
+  "dev.gustavosett.clipboard-history": "bypass",
+  "win11-clipboard-history": "bypass",
+  "win11-clipboard-history-bin": "bypass"
+}"#,
+        )
+        .unwrap();
+
+        assert!(register_bypass_to_path(&file_path).unwrap());
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&file_path).unwrap()).unwrap();
+        for &id in WIN11CLIP_APP_IDS {
+            assert_eq!(parsed.get(id).and_then(|v| v.as_str()), Some("bypass"));
+        }
+        assert!(!register_bypass_to_path(&file_path).unwrap());
+    }
+
+    #[test]
     fn test_is_adaptive_dock_installed() {
         let installed = is_adaptive_dock_installed();
         // Since adaptive-dock@harsh.patel is installed on this test machine, it should return true
@@ -305,6 +339,7 @@ mod tests {
         }
 
         // Verify 2 spaces indentation
+        assert!(content.contains(&format!("  \"{}\": \"bypass\"", crate::app_id::APP_ID)));
         assert!(content.contains("  \"dev.gustavosett.clipboard-history\": \"bypass\""));
 
         // Second run: idempotent, returns false, does not alter content

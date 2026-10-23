@@ -2,9 +2,10 @@
 name = "win11-clipboard-history-lib"
 version = "0.7.5"
 description = "A Windows 11-style Clipboard History Manager for Linux"
-authors = ["gustavosett"]
+authors = ["harshp2008"]
 license = "MIT"
-repository = "https://github.com/gustavosett/Windows-11-Clipboard-History-For-Linux"
+homepage = "https://github.com/harshp2008/Win11Clip"
+repository = "https://github.com/harshp2008/Win11Clip"
 edition = "2021"
 rust-version = "1.77"
 

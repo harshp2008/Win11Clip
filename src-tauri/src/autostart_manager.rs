@@ -3,11 +3,13 @@
 // but we need to use the wrapper script that sets up the correct environment variables
 // (TAURI_TRAY, etc.) for proper tray icon functionality.
 
+use crate::app_id::APP_ID;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-const DESKTOP_ENTRY_TEMPLATE: &str = r#"[Desktop Entry]
+const DESKTOP_ENTRY_TEMPLATE: &str = concat!(
+    r#"[Desktop Entry]
 Type=Application
 Version=1.1
 Name=Clipboard History
@@ -19,8 +21,10 @@ Terminal=false
 Categories=Utility;
 StartupNotify=false
 X-GNOME-Autostart-enabled=true
-StartupWMClass=dev.gustavosett.clipboard-history
-"#;
+StartupWMClass="#,
+    crate::app_id!(),
+    "\n"
+);
 
 /// The login auto-update entry. `spawn_at` is the command from `spawn_at_path::desktop_exec_in`
 /// (the full path of `~/.local/bin/spawn-at` when present); the old fallbacks stay for machines
@@ -77,6 +81,72 @@ fn get_exec_path() -> String {
         .unwrap_or_else(|_| "win11-clipboard-history".to_string())
 }
 
+/// The autostart entry for the executable `exec_path`.
+fn render_entry(exec_path: &str) -> String {
+    DESKTOP_ENTRY_TEMPLATE.replace("EXEC_PATH", exec_path)
+}
+
+/// Writes the autostart entry for `exec_path` to `file`, replacing what is there.
+fn write_autostart_file(file: &Path, exec_path: &str) -> Result<(), String> {
+    let mut out =
+        fs::File::create(file).map_err(|e| format!("Failed to create autostart file: {}", e))?;
+
+    out.write_all(render_entry(exec_path).as_bytes())
+        .map_err(|e| format!("Failed to write autostart file: {}", e))
+}
+
+/// Why `content` (an existing autostart entry) has to be rewritten; empty when it is current.
+/// Rewriting produces `render_entry`, which gives no reasons, so a migration never repeats.
+fn migration_reasons(content: &str) -> Vec<&'static str> {
+    let exec_line = content
+        .lines()
+        .find(|line| line.trim_start().starts_with("Exec="));
+    let mut reasons = Vec::new();
+
+    // The Exec= line is using the old binary path directly
+    if exec_line.is_some_and(|line| line.contains("win11-clipboard-history-bin")) {
+        reasons.push("Migrating from old binary path to wrapper...");
+    }
+    // The Exec= line is missing the sleep (for multi-distro compatibility); sleep in exec is used
+    // instead of X-GNOME-Autostart-Delay because it works everywhere
+    if exec_line.is_some_and(|line| !line.contains("sleep")) {
+        reasons.push("Adding sleep to exec for proper tray initialization...");
+    }
+    // The Exec= line is missing the --background flag
+    if exec_line.is_some_and(|line| !line.contains("--background")) {
+        reasons.push("Adding --background flag for minimized startup...");
+    }
+    // The deprecated X-GNOME-Autostart-Delay (should use sleep in exec instead)
+    if content
+        .lines()
+        .any(|line| line.trim_start().starts_with("X-GNOME-Autostart-Delay="))
+    {
+        reasons.push(
+            "Replacing X-GNOME-Autostart-Delay with sleep in exec (multi-distro compatibility)...",
+        );
+    }
+    // The window class is not the app's own id (a missing line, or an older release's class)
+    let wm_class = format!("StartupWMClass={APP_ID}");
+    if !content.lines().any(|line| line.trim() == wm_class) {
+        reasons.push("Setting StartupWMClass to the app id (the window class spawn-at matches)...");
+    }
+    reasons
+}
+
+/// Rewrites the entry at `file` when `migration_reasons` finds something to fix. Returns whether it did.
+fn migrate_autostart_file(file: &Path, exec_path: &str) -> Result<bool, String> {
+    let content = fs::read_to_string(file).unwrap_or_default();
+    let reasons = migration_reasons(&content);
+    if reasons.is_empty() {
+        return Ok(false);
+    }
+    for reason in reasons {
+        println!("[Autostart] {}", reason);
+    }
+    write_autostart_file(file, exec_path)?;
+    Ok(true)
+}
+
 /// Enable autostart by creating a .desktop file in ~/.config/autostart/
 #[tauri::command]
 pub fn autostart_enable() -> Result<(), String> {
@@ -90,15 +160,7 @@ pub fn autostart_enable() -> Result<(), String> {
     // Get the correct executable path (wrapper preferred)
     let exec_path = get_exec_path();
 
-    // Generate desktop entry content
-    let content = DESKTOP_ENTRY_TEMPLATE.replace("EXEC_PATH", &exec_path);
-
-    // Write the desktop file
-    let mut file = fs::File::create(&autostart_file)
-        .map_err(|e| format!("Failed to create autostart file: {}", e))?;
-
-    file.write_all(content.as_bytes())
-        .map_err(|e| format!("Failed to write autostart file: {}", e))?;
+    write_autostart_file(&autostart_file, &exec_path)?;
 
     println!(
         "[Autostart] Enabled autostart with exec path: {}",
@@ -156,64 +218,13 @@ pub fn autostart_migrate() -> Result<bool, String> {
         return Ok(false); // Nothing to migrate
     }
 
-    let content = read_autostart_content().unwrap_or_default();
-
-    // Check if the Exec= line is using the old binary path directly
-    let uses_old_binary = content
-        .lines()
-        .find(|line| line.trim_start().starts_with("Exec="))
-        .is_some_and(|line| line.contains("win11-clipboard-history-bin"));
-
-    // Check if the Exec= line is missing the sleep (for multi-distro compatibility)
-    // We use sleep in exec instead of X-GNOME-Autostart-Delay for better compatibility
-    let missing_sleep = content
-        .lines()
-        .find(|line| line.trim_start().starts_with("Exec="))
-        .is_some_and(|line| !line.contains("sleep"));
-
-    // Check if the Exec= line is missing the --background flag
-    let missing_background = content
-        .lines()
-        .find(|line| line.trim_start().starts_with("Exec="))
-        .is_some_and(|line| !line.contains("--background"));
-
-    // Check if using deprecated X-GNOME-Autostart-Delay (should use sleep in exec instead)
-    let has_gnome_delay = content
-        .lines()
-        .any(|line| line.trim_start().starts_with("X-GNOME-Autostart-Delay="));
-
-    // Check if missing StartupWMClass with reverse-DNS identifier
-    let missing_wm_class = !content.contains("StartupWMClass=dev.gustavosett.clipboard-history");
-
-    let needs_migration = uses_old_binary || missing_sleep || missing_background || has_gnome_delay || missing_wm_class;
-
-    if needs_migration {
-        if uses_old_binary {
-            println!("[Autostart] Migrating from old binary path to wrapper...");
-        }
-        if missing_sleep {
-            println!("[Autostart] Adding sleep to exec for proper tray initialization...");
-        }
-        if missing_background {
-            println!("[Autostart] Adding --background flag for minimized startup...");
-        }
-        if has_gnome_delay {
-            println!("[Autostart] Replacing X-GNOME-Autostart-Delay with sleep in exec (multi-distro compatibility)...");
-        }
-        if missing_wm_class {
-            println!("[Autostart] Adding StartupWMClass to autostart entry for reverse-DNS app matching...");
-        }
-
-        // Re-enable with correct path, sleep and --background
-        autostart_enable()?;
-
-        return Ok(true); // Migration performed
-    }
+    // Re-enable with correct path, sleep, --background and window class
+    let migrated = migrate_autostart_file(&autostart_file, &get_exec_path())?;
 
     // Ensure spawn-at auto-update is configured even if no Win11Clip migration was needed
     let _ = ensure_spawn_at_autoupdate();
 
-    Ok(false) // No migration needed
+    Ok(migrated)
 }
 
 /// Ensures the spawn-at auto-update autostart desktop entry is present and properly configured.
@@ -277,5 +288,78 @@ mod spawn_at_entry_tests {
         assert!(e.contains(
             "&& (/home/u/.local/bin/spawn-at update --headless || ~/.local/bin/spawn-at"
         ));
+    }
+}
+
+#[cfg(test)]
+mod wm_class_tests {
+    use super::*;
+    use crate::app_id::{APP_ID, LEGACY_APP_IDS};
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("test_autostart_{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn template_carries_the_app_id_as_window_class() {
+        let entry = render_entry("/usr/bin/win11-clipboard-history");
+        assert!(entry
+            .lines()
+            .any(|l| l == format!("StartupWMClass={APP_ID}")));
+        assert!(entry.ends_with('\n'));
+        for old in LEGACY_APP_IDS {
+            assert!(!entry.contains(&format!("StartupWMClass={old}")));
+        }
+    }
+
+    #[test]
+    fn a_fresh_entry_needs_no_migration() {
+        assert!(migration_reasons(&render_entry("/usr/bin/win11-clipboard-history")).is_empty());
+    }
+
+    #[test]
+    fn entries_with_an_old_or_no_class_are_migrated_once_and_then_left_alone() {
+        let tmp = TempDir::new();
+        for old_class in LEGACY_APP_IDS {
+            let file = tmp.0.join("win11-clipboard-history.desktop");
+            let old = render_entry("/usr/bin/win11-clipboard-history").replace(APP_ID, old_class);
+            fs::write(&file, &old).unwrap();
+
+            // First run rewrites it ...
+            assert!(migrate_autostart_file(&file, "/usr/bin/win11-clipboard-history").unwrap());
+            let migrated = fs::read_to_string(&file).unwrap();
+            assert!(migrated.contains(&format!("StartupWMClass={APP_ID}\n")));
+            assert!(!migrated.contains(&format!("StartupWMClass={old_class}")));
+            assert_eq!(migrated, render_entry("/usr/bin/win11-clipboard-history"));
+
+            // ... and the next ones do nothing (no loop).
+            assert!(!migrate_autostart_file(&file, "/usr/bin/win11-clipboard-history").unwrap());
+            assert!(!migrate_autostart_file(&file, "/usr/bin/win11-clipboard-history").unwrap());
+            assert_eq!(fs::read_to_string(&file).unwrap(), migrated);
+        }
+
+        // An entry with no StartupWMClass line at all gets one.
+        let file = tmp.0.join("none.desktop");
+        let no_class: String = render_entry("/usr/bin/x")
+            .lines()
+            .filter(|l| !l.starts_with("StartupWMClass="))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        fs::write(&file, no_class).unwrap();
+        assert!(migrate_autostart_file(&file, "/usr/bin/x").unwrap());
+        assert!(!migrate_autostart_file(&file, "/usr/bin/x").unwrap());
     }
 }
