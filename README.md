@@ -81,7 +81,7 @@ Under Wayland, security isolation prevents regular applications from reading glo
 > **Post-Install Session Restart:**  
 > When installing on **GNOME Wayland for the first time**, you must **log out and log back in** (or restart your session). GNOME Shell only initializes newly installed extension D-Bus interfaces upon starting a fresh user session. The same applies whenever the installer updates one of the three extensions (`win11-clipboard-bridge`, `window-calls`, `spawn-at`) or `spawn-at` is updated later.
 >
-> One login is enough. About 20 seconds after you log in, a one-time check shows a notification either way: "Clipboard History is ready", or "log out and back in once more" naming what did not load (the details are in `~/.local/state/win11clip-installer/firstrun.log`). The installer also warns up front if an extension does not list your GNOME Shell version, since GNOME then refuses to load it.
+> One login is enough. About 20 seconds after you log in, a one-time check shows a notification either way: "Win11Clip is ready", or "log out and back in once more" naming what did not load (the details are in `~/.local/state/win11clip-installer/firstrun.log`). The installer also warns up front if an extension does not list your GNOME Shell version, since GNOME then refuses to load it.
 
 ---
 
@@ -91,7 +91,7 @@ Win11Clip registers custom global shortcuts directly with your desktop environme
 
 | Shortcut | Action | Description |
 | :--- | :--- | :--- |
-| <kbd>Super</kbd> + <kbd>V</kbd> | **Clipboard History** | Opens the clipboard history flyout at the mouse pointer. |
+| <kbd>Super</kbd> + <kbd>V</kbd> | **Clipboard history** | Opens the clipboard history flyout at the mouse pointer. |
 | <kbd>Super</kbd> + <kbd>.</kbd> | **Emoji Picker** | Opens the searchable emoji picker flyout at the mouse pointer. |
 | <kbd>Enter</kbd> | **Paste Item** | Pastes the selected clipboard item or emoji into the active window. |
 | <kbd>Esc</kbd> | **Close** | Closes the flyout immediately. |
@@ -101,21 +101,45 @@ On GNOME, `<Super>v` is bound by default to `focus-active-notification` (Message
 
 ### Manual Keybinding Setup (If Needed)
 If you are running a standalone window manager (Sway, Hyprland, i3, etc.) or prefer manual configuration (use the full path, `~/.local/bin/spawn-at`, if that folder is not on the `PATH` your session starts with):
-- **Clipboard History:** `spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c io.github.harshp2008.win11clip win11-clipboard-history --clipboard`
-- **Emoji Picker:** `spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c io.github.harshp2008.win11clip win11-clipboard-history --emoji`
+- **Clipboard history (Super+V):** `spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c io.github.harshp2008.win11clip win11clip --clipboard`
+- **Emoji picker (Super+.):** `spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c io.github.harshp2008.win11clip win11clip --emoji`
 
-`-c io.github.harshp2008.win11clip` is the app's own Wayland app id (X11 `WM_CLASS`). It tells `spawn-at` which window is the popup, so keep it in every shortcut you write by hand. Shortcuts from earlier releases (without `-c`, or with the old `dev.gustavosett.clipboard-history` class) are replaced by the installer and the Setup Wizard, never duplicated.
+`-c io.github.harshp2008.win11clip` is the app's own Wayland app id (X11 `WM_CLASS`). It tells `spawn-at` which window is the popup, so keep it in every shortcut you write by hand. Shortcuts from earlier releases (the old command `win11-clipboard-history`, without `-c`, or with the old `dev.gustavosett.clipboard-history` class) are replaced by the installer and the app, never duplicated.
+
+---
+
+## 🔄 Upgrading from the old name
+
+Until version 0.7.5 this app was called *Clipboard History* and its command, package and folders were named `win11-clipboard-history` (the name the upstream project uses for its own package). Win11Clip is now `win11clip` everywhere:
+
+| | Before | Now |
+| :--- | :--- | :--- |
+| Name shown | Clipboard History | **Win11Clip** |
+| Command | `win11-clipboard-history` | `win11clip` (the executable is `win11clip-bin`) |
+| Package (deb, rpm, AUR) | `win11-clipboard-history` | `win11clip` (declares `Replaces`, `Conflicts` and `Provides` for the old name) |
+| Desktop file and icon | `win11-clipboard-history` | `io.github.harshp2008.win11clip` |
+| Autostart entry | `win11-clipboard-history.desktop` | `io.github.harshp2008.win11clip.desktop` |
+| Data, config and cache folders | `win11-clipboard-history` | `win11clip` |
+
+Installing over an old installation is safe:
+
+- **Package:** the installer asks (default No) before it removes the old `win11-clipboard-history` package, saves that package's files under `~/.local/state/win11clip-installer/backup` first, and installs `win11clip`. Release packages of Win11Clip up to 0.7.5 carry the same maintainer as the upstream project's package, so the installer shows you the maintainer instead of guessing which one it is.
+- **Your data:** on its first start the new version **copies** your clipboard history, settings, first-run flag and GIF cache from the old folders to the new ones. The old folders are never moved or deleted, and nothing is copied again once the new ones exist, so you will not see the Setup Wizard again.
+- **Shortcuts and autostart:** shortcuts and the autostart entry of the old name are rewritten in place for the new command, never duplicated.
+- **Old files:** the installer removes the old launcher, menu entry and icons that no package owns, so the app menu shows Win11Clip once.
 
 ---
 
 ## 🗑️ Uninstallation
 
-Win11Clip includes a clean uninstaller that removes binaries, desktop integration, custom GNOME shortcuts, and offers an interactive prompt to cleanly keep or remove companion extensions.
+Win11Clip includes a clean uninstaller that removes binaries, desktop integration, custom GNOME shortcuts, and offers an interactive prompt to cleanly keep or remove companion extensions. It removes everything of Win11Clip **and** of the old name (`win11-clipboard-history`) in one go. It never deletes your clipboard history or settings: `~/.config/win11clip`, `~/.local/share/win11clip` and `~/.cache/win11clip` (and the same folders under the old name) stay where they are, and it tells you which ones exist.
 
 ### From Terminal (Anytime)
 ```bash
-win11-clipboard-uninstall
+win11clip-uninstall
 ```
+
+The old command `win11-clipboard-uninstall` still works; the installer leaves it as a link to the new one.
 
 ### Or One-Line Remote Uninstall
 ```bash
@@ -130,22 +154,22 @@ Pre-compiled packages for each release are available on the [Releases](https://g
 
 ### Debian / Ubuntu (.deb)
 ```bash
-sudo dpkg -i win11-clipboard-history_*.deb
+sudo dpkg -i win11clip_*.deb
 sudo apt install -f -y
 sudo setfacl -m u:$USER:rw /dev/uinput
 ```
 
 ### Fedora / RHEL (.rpm)
 ```bash
-sudo dnf install ./win11-clipboard-history-*.rpm
+sudo dnf install ./win11clip-*.rpm
 sudo setfacl -m u:$USER:rw /dev/uinput
 ```
 
 ### AppImage
 ```bash
-chmod +x win11-clipboard-history_*.AppImage
+chmod +x win11clip_*.AppImage
 sudo setfacl -m u:$USER:rw /dev/uinput
-./win11-clipboard-history_*.AppImage --clipboard
+./win11clip_*.AppImage --clipboard
 ```
 
 ### GNOME: `spawn-at` and the log-out after a manual install
@@ -156,7 +180,7 @@ curl -fsSL https://raw.githubusercontent.com/harshp2008/spawn-at/main/install.sh
 spawn-at -V   # must print spawn-at 0.2.4 or newer
 ```
 
-**On Wayland, a newly installed or updated GNOME extension only loads after you log out and back in.** Do that once after installing or updating `spawn-at` or any of these extensions. With the Quick Install script, a one-time check runs about 20 seconds after you log in and shows a notification, either "Clipboard History is ready" or which extension did not load (details in `~/.local/state/win11clip-installer/firstrun.log`). A manual install has no such check, so use the commands under [Troubleshooting](#-troubleshooting) to look at the extensions yourself.
+**On Wayland, a newly installed or updated GNOME extension only loads after you log out and back in.** Do that once after installing or updating `spawn-at` or any of these extensions. With the Quick Install script, a one-time check runs about 20 seconds after you log in and shows a notification, either "Win11Clip is ready" or which extension did not load (details in `~/.local/state/win11clip-installer/firstrun.log`). A manual install has no such check, so use the commands under [Troubleshooting](#-troubleshooting) to look at the extensions yourself.
 
 ---
 
@@ -179,7 +203,7 @@ spawn-at -V   # must print spawn-at 0.2.4 or newer
   ```
 - **NVIDIA / Transparency Issues:** Run with the hardware acceleration workaround flag:
   ```bash
-  IS_NVIDIA=1 win11-clipboard-history --clipboard
+  IS_NVIDIA=1 win11clip --clipboard
   ```
 
 ---

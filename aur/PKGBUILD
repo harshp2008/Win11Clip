@@ -1,7 +1,8 @@
 # Maintainer: Harsh Patel (harshp2008)
-# Packages the .deb from this repository's own GitHub releases. Not published to the AUR from here:
-# the AUR name win11-clipboard-history-bin belongs to the upstream project (gustavosett).
-pkgname=win11-clipboard-history-bin
+# Packages the .deb from this repository's own GitHub releases, as the package win11clip. It replaces
+# the old name win11-clipboard-history, which is also the name of the upstream project's package
+# (gustavosett); the AUR package win11-clipboard-history-bin is upstream's and is not this one.
+pkgname=win11clip
 pkgver=0.7.5
 pkgrel=1
 pkgdesc="Windows 11-style Clipboard History Manager for Linux"
@@ -23,9 +24,10 @@ optdepends=(
 )
 provides=('win11-clipboard-history')
 conflicts=('win11-clipboard-history')
+replaces=('win11-clipboard-history')
 options=('!strip' '!debug')
-source_x86_64=("${url}/releases/download/v${pkgver}/win11-clipboard-history_${pkgver}_amd64.deb")
-source_aarch64=("${url}/releases/download/v${pkgver}/win11-clipboard-history_${pkgver}_arm64.deb")
+source_x86_64=("${url}/releases/download/v${pkgver}/win11clip_${pkgver}_amd64.deb")
+source_aarch64=("${url}/releases/download/v${pkgver}/win11clip_${pkgver}_arm64.deb")
 sha256sums_x86_64=('SKIP')
 sha256sums_aarch64=('SKIP')
 install="${pkgname}.install"
@@ -36,8 +38,8 @@ package() {
     bsdtar -xf data.tar.* -C "$pkgdir/"
     
     # Fix permissions
-    chmod 755 "$pkgdir/usr/bin/win11-clipboard-history"
-    chmod 755 "$pkgdir/usr/bin/win11-clipboard-history-bin" 2>/dev/null || true
+    chmod 755 "$pkgdir/usr/bin/win11clip"
+    chmod 755 "$pkgdir/usr/bin/win11clip-bin" 2>/dev/null || true
     
     # Move udev rules to Arch location
     if [ -d "$pkgdir/etc/udev/rules.d" ]; then
