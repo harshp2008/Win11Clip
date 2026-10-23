@@ -592,16 +592,19 @@ for target in \
     "$SYSROOT/usr/local/share/applications/$APP_ID.desktop" \
     "$SYSROOT/usr/local/share/applications/$OLD_CMD.desktop" \
     "$SYSROOT/usr/share/metainfo/$APP_ID.metainfo.xml" \
+    "$SYSROOT/usr/local/share/metainfo/$APP_ID.metainfo.xml" \
     "$SYSROOT/usr/share/icons/hicolor/128x128/apps/$APP_ID.png" \
     "$SYSROOT/usr/share/icons/hicolor/256x256/apps/$APP_ID.png" \
     "$SYSROOT/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg" \
     "$SYSROOT/usr/local/share/icons/hicolor/128x128/apps/$APP_ID.png" \
     "$SYSROOT/usr/local/share/icons/hicolor/256x256/apps/$APP_ID.png" \
+    "$SYSROOT/usr/local/share/icons/hicolor/scalable/apps/$APP_ID.svg" \
     "$SYSROOT/usr/share/icons/hicolor/128x128/apps/$OLD_CMD.png" \
     "$SYSROOT/usr/share/icons/hicolor/256x256/apps/$OLD_CMD.png" \
     "$SYSROOT/usr/share/icons/hicolor/scalable/apps/$OLD_CMD.svg" \
     "$SYSROOT/usr/local/share/icons/hicolor/128x128/apps/$OLD_CMD.png" \
     "$SYSROOT/usr/local/share/icons/hicolor/256x256/apps/$OLD_CMD.png" \
+    "$SYSROOT/usr/local/share/icons/hicolor/scalable/apps/$OLD_CMD.svg" \
     "$SYSROOT/etc/udev/rules.d/99-win11-clipboard-input.rules" \
     "$SYSROOT/etc/modules-load.d/win11-clipboard.conf"; do
     if [ -e "$target" ] || [ -L "$target" ]; then
@@ -615,6 +618,10 @@ done
 
 # Where `make install` (the --build path) puts the app binary, under both names
 $SUDO_CMD rm -rf "$SYSROOT/usr/local/lib/$APP_CMD" "$SYSROOT/usr/local/lib/$OLD_CMD"
+
+# Folders the installer made for its own records. rmdir only removes an empty folder, so nothing
+# that holds anything (backups, the old app's settings) is touched.
+rmdir "$HOME/.config/win11-clipboard-history" "$STATE_DIR" 2>/dev/null || true
 
 success "Configuration and binaries removed."
 if [ -d "$BACKUP_DIR" ]; then
