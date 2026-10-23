@@ -294,6 +294,29 @@ mod tests {
         }
     }
 
+    /// Points `XDG_CONFIG_HOME` at a directory for the life of the guard, then puts it back.
+    /// Only that variable is touched: `HOME` is also read by `is_adaptive_dock_installed`.
+    struct ConfigHome {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl ConfigHome {
+        fn set(dir: &Path) -> Self {
+            let previous = std::env::var_os("XDG_CONFIG_HOME");
+            std::env::set_var("XDG_CONFIG_HOME", dir);
+            Self { previous }
+        }
+    }
+
+    impl Drop for ConfigHome {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
     #[test]
     fn win11clip_app_ids_hold_the_app_id_and_every_older_class() {
         assert!(WIN11CLIP_APP_IDS.contains(&crate::app_id::APP_ID));
@@ -350,9 +373,15 @@ mod tests {
 
     #[test]
     fn test_live_registration() {
+        // Declared in this order so the variable is restored before the directory is removed.
+        let temp_dir = TempDir::new();
+        let _config_home = ConfigHome::set(temp_dir.path());
+        let path = get_dock_app_states_path();
+        // Never write outside the temp dir, even if XDG_CONFIG_HOME is not honoured.
+        assert!(path.starts_with(temp_dir.path()), "{}", path.display());
+
         let res = register_adaptive_dock_bypass();
         assert!(res.is_ok());
-        let path = get_dock_app_states_path();
         let content = fs::read_to_string(&path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         for &id in WIN11CLIP_APP_IDS {
