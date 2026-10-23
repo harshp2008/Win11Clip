@@ -872,8 +872,7 @@ impl GSettings {
         let entry_check = if self.path_prefix.contains("cinnamon") {
             expected_path
                 .split('/')
-                .filter(|s| !s.is_empty())
-                .last()
+                .rfind(|s| !s.is_empty())
                 .unwrap_or("")
                 .to_string()
         } else {
