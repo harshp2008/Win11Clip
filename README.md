@@ -132,14 +132,14 @@ Installing over an old installation is safe:
 
 ## 🗑️ Uninstallation
 
-Win11Clip includes a clean uninstaller that removes binaries, desktop integration, custom GNOME shortcuts, and offers an interactive prompt to cleanly keep or remove companion extensions. It removes everything of Win11Clip **and** of the old name (`win11-clipboard-history`) in one go. It never deletes your clipboard history or settings: `~/.config/win11clip`, `~/.local/share/win11clip` and `~/.cache/win11clip` (and the same folders under the old name) stay where they are, and it tells you which ones exist.
+Win11Clip includes a clean uninstaller that removes binaries, desktop integration, custom GNOME shortcuts, and offers an interactive prompt to cleanly keep or remove companion extensions. It removes everything of Win11Clip **and** of the old name (`win11-clipboard-history`) in one go. It never deletes your clipboard history or settings: `~/.config/win11clip`, `~/.local/share/win11clip` and `~/.cache/win11clip` (and the same folders under the old name) stay where they are, and it tells you which ones exist. At the end it lists everything it kept on purpose (those folders, the installer's backups in `~/.local/state/win11clip-installer`, and `window-calls` or `spawn-at` if you chose to keep them), each with the command that deletes it. It deletes itself as its very last step, unless you kept the app's system package, in which case it stays so you can run it again.
 
 ### From Terminal (Anytime)
 ```bash
 win11clip-uninstall
 ```
 
-The old command `win11-clipboard-uninstall` still works; the installer leaves it as a link to the new one.
+The old command `win11-clipboard-uninstall` still works; the installer leaves it as a link to the new one. If the terminal still finds `win11clip-uninstall` after it has finished, that is the shell remembering the old path; run `hash -r`.
 
 ### Or One-Line Remote Uninstall
 ```bash
