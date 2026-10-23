@@ -75,7 +75,10 @@ pub fn is_adaptive_dock_installed() -> bool {
     {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            if stdout.lines().any(|l| l.trim() == ADAPTIVE_DOCK_EXTENSION_UUID) {
+            if stdout
+                .lines()
+                .any(|l| l.trim() == ADAPTIVE_DOCK_EXTENSION_UUID)
+            {
                 return true;
             }
         }
@@ -88,7 +91,10 @@ pub fn is_adaptive_dock_installed() -> bool {
     {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            if stdout.lines().any(|l| l.trim() == ADAPTIVE_DOCK_EXTENSION_UUID) {
+            if stdout
+                .lines()
+                .any(|l| l.trim() == ADAPTIVE_DOCK_EXTENSION_UUID)
+            {
                 return true;
             }
         }
@@ -132,7 +138,12 @@ pub fn register_adaptive_dock_bypass() -> Result<bool, String> {
 pub fn register_bypass_to_path(states_path: &Path) -> Result<bool, String> {
     let parent_dir = match states_path.parent() {
         Some(p) => p,
-        None => return Err(format!("Invalid path for dock-app-states.json: {}", states_path.display())),
+        None => {
+            return Err(format!(
+                "Invalid path for dock-app-states.json: {}",
+                states_path.display()
+            ))
+        }
     };
 
     // Ensure parent directory exists with 0o755 permissions
@@ -143,13 +154,21 @@ pub fn register_bypass_to_path(states_path: &Path) -> Result<bool, String> {
         builder.recursive(true);
         builder.mode(0o755);
         if let Err(e) = builder.create(parent_dir) {
-            return Err(format!("Failed to create directory {}: {}", parent_dir.display(), e));
+            return Err(format!(
+                "Failed to create directory {}: {}",
+                parent_dir.display(),
+                e
+            ));
         }
     }
     #[cfg(not(unix))]
     {
         if let Err(e) = fs::create_dir_all(parent_dir) {
-            return Err(format!("Failed to create directory {}: {}", parent_dir.display(), e));
+            return Err(format!(
+                "Failed to create directory {}: {}",
+                parent_dir.display(),
+                e
+            ));
         }
     }
 
@@ -208,8 +227,7 @@ pub fn register_bypass_to_path(states_path: &Path) -> Result<bool, String> {
         .serialize(&mut serializer)
         .map_err(|e| format!("Failed to serialize dock-app-states JSON: {}", e))?;
 
-    let mut output = String::from_utf8(buf)
-        .map_err(|e| format!("UTF-8 encoding error: {}", e))?;
+    let mut output = String::from_utf8(buf).map_err(|e| format!("UTF-8 encoding error: {}", e))?;
     if !output.ends_with('\n') {
         output.push('\n');
     }
@@ -240,7 +258,10 @@ pub fn register_bypass_if_applicable() {
                 // Idempotent: already present and correct
             }
             Err(e) => {
-                eprintln!("[AdaptiveDock] Warning: Failed to configure bypass state: {}", e);
+                eprintln!(
+                    "[AdaptiveDock] Warning: Failed to configure bypass state: {}",
+                    e
+                );
             }
         }
     }
@@ -256,7 +277,8 @@ mod tests {
 
     impl TempDir {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("test_adaptive_dock_{}", uuid::Uuid::new_v4()));
+            let path =
+                std::env::temp_dir().join(format!("test_adaptive_dock_{}", uuid::Uuid::new_v4()));
             let _ = fs::create_dir_all(&path);
             Self { path }
         }
@@ -382,7 +404,10 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
 
         assert_eq!(parsed.get("chrome").and_then(|v| v.as_str()), Some("hide"));
-        assert_eq!(parsed.get("antigravity").and_then(|v| v.as_str()), Some("show"));
+        assert_eq!(
+            parsed.get("antigravity").and_then(|v| v.as_str()),
+            Some("show")
+        );
         for &id in WIN11CLIP_APP_IDS {
             assert_eq!(parsed.get(id).and_then(|v| v.as_str()), Some("bypass"));
         }

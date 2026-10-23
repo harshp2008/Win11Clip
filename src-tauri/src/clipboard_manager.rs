@@ -701,8 +701,11 @@ impl ClipboardManager {
         // middle-click pastes and sometimes fallback text insertion.
         #[cfg(target_os = "linux")]
         {
-            use arboard::{SetExtLinux, LinuxClipboardKind};
-            let _ = clipboard.set().clipboard(LinuxClipboardKind::Primary).text(text);
+            use arboard::{LinuxClipboardKind, SetExtLinux};
+            let _ = clipboard
+                .set()
+                .clipboard(LinuxClipboardKind::Primary)
+                .text(text);
         }
 
         Ok(())
@@ -718,8 +721,11 @@ impl ClipboardManager {
         // Also write the plain fallback to Primary selection for robust native GTK4 pasting.
         #[cfg(target_os = "linux")]
         {
-            use arboard::{SetExtLinux, LinuxClipboardKind};
-            let _ = clipboard.set().clipboard(LinuxClipboardKind::Primary).text(plain);
+            use arboard::{LinuxClipboardKind, SetExtLinux};
+            let _ = clipboard
+                .set()
+                .clipboard(LinuxClipboardKind::Primary)
+                .text(plain);
         }
 
         Ok(())

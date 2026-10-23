@@ -397,7 +397,10 @@ pub fn register_global_shortcut() {
 
     let command_path = get_command_path();
     let spawn_at = crate::spawn_at_path::shell_command();
-    println!("[ShortcutManager] Using command path: {} (spawn-at: {})", command_path, spawn_at);
+    println!(
+        "[ShortcutManager] Using command path: {} (spawn-at: {})",
+        command_path, spawn_at
+    );
 
     for shortcut in SHORTCUTS {
         // Create a new config with the correct command path
@@ -685,10 +688,7 @@ impl Utils {
             ));
             // Best-effort backup - don't fail if we can't create it, but log warning
             if let Err(e) = fs::copy(path, &backup_path) {
-                eprintln!(
-                    "[ShortcutManager] Warning: Failed to create backup: {}",
-                    e
-                );
+                eprintln!("[ShortcutManager] Warning: Failed to create backup: {}", e);
             }
         }
 
