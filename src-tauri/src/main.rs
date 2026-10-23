@@ -209,9 +209,12 @@ fn get_user_settings() -> Result<UserSettings, String> {
 fn set_user_settings(
     app: AppHandle,
     state: State<AppState>,
-    new_settings: UserSettings,
+    mut new_settings: UserSettings,
 ) -> Result<(), String> {
     let manager = UserSettingsManager::new();
+    // The start-at-login choice is only written by `set_start_at_login`; a window holding an
+    // older copy of the settings must not overwrite it.
+    new_settings.start_at_login = manager.load().start_at_login;
     manager.save(&new_settings)?;
 
     // Update clipboard manager's max history size if it changed
@@ -236,6 +239,25 @@ fn set_user_settings(
     });
 
     Ok(())
+}
+
+/// Remembers the "Start at login" choice, then applies it (creates or removes the autostart
+/// entry). The choice is saved first so a failing apply still leaves what the user asked for;
+/// the error is returned and the caller re-reads the real state with `autostart_is_enabled`.
+#[tauri::command]
+fn set_start_at_login(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let manager = UserSettingsManager::new();
+    let mut settings = manager.load();
+    settings.start_at_login = Some(enabled);
+    manager.save(&settings)?;
+    // Let an open Settings window pick up the new choice
+    let _ = app.emit("app-settings-changed", &settings);
+
+    if enabled {
+        autostart_manager::autostart_enable()
+    } else {
+        autostart_manager::autostart_disable()
+    }
 }
 
 #[tauri::command]
@@ -1213,6 +1235,12 @@ fn main() {
                 Err(e) => eprintln!("[Setup] Failed to migrate autostart: {}", e),
             }
 
+            // Start at login is on unless the user switched it off: bring a missing entry back
+            let start_at_login_wanted = UserSettingsManager::new().load().start_at_login_wanted();
+            if let Err(e) = autostart_manager::ensure_autostart(start_at_login_wanted) {
+                eprintln!("[Setup] Failed to restore the autostart entry: {}", e);
+            }
+
             // Ensure spawn-at auto-update on login entry is configured
             let _ = autostart_manager::ensure_spawn_at_autoupdate();
 
@@ -1436,6 +1464,7 @@ fn main() {
             debug_log,
             get_user_settings,
             set_user_settings,
+            set_start_at_login,
             is_settings_window_visible,
             copy_text_to_clipboard,
             get_system_theme,

@@ -7,6 +7,8 @@ const enable = () => invoke('autostart_enable')
 const disable = () => invoke('autostart_disable')
 const isEnabled = () => invoke<boolean>('autostart_is_enabled')
 const migrate = () => invoke<boolean>('autostart_migrate')
+// Remembers the choice, then enables or disables the entry to match
+const setChoice = (enabled: boolean) => invoke('set_start_at_login', { enabled })
 
 export function useAutostart() {
   const [enabled, setEnabled] = useState(false)
@@ -46,6 +48,34 @@ export function useAutostart() {
     // On mount, try to migrate old autostart entries and check status
     migrateAndCheck()
   }, [checkStatus])
+
+  // Saves the "Start at login" choice and applies it, then shows what is really on disk: the
+  // result of the call is not trusted, `enabled` always comes from a fresh read. True only when
+  // the call succeeded and the real state is the one asked for.
+  const applyStartAtLogin = async (want: boolean): Promise<boolean> => {
+    setLoading(true)
+    setError(null)
+    let problem: string | null = null
+    try {
+      await setChoice(want)
+    } catch (e) {
+      console.error('Failed to change start at login:', e)
+      problem = String(e)
+    }
+    try {
+      const actual = await isEnabled()
+      setEnabled(actual)
+      if (problem === null && actual !== want) {
+        problem = `Start at login is still ${actual ? 'on' : 'off'}`
+      }
+    } catch (e) {
+      console.error('Failed to check autostart status:', e)
+      problem ??= String(e)
+    }
+    setError(problem)
+    setLoading(false)
+    return problem === null
+  }
 
   const toggle = async (): Promise<boolean> => {
     setLoading(true)
@@ -108,6 +138,7 @@ export function useAutostart() {
     loading,
     error,
     toggle,
+    applyStartAtLogin,
     enableAutostart,
     disableAutostart,
     checkStatus,

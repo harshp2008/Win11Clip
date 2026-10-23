@@ -2,6 +2,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { useState, useEffect } from 'react'
 import { clsx } from 'clsx'
 import { useAutostart } from '../hooks/useAutostart'
+import { Switch } from './Switch'
+import type { UserSettings } from '../types/clipboard'
 import { getTertiaryBackgroundStyle } from '../utils/themeUtils'
 import { useSystemThemePreference } from '../utils/systemTheme'
 import {
@@ -121,7 +123,9 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
   const [conflictError, setConflictError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [hoveredButton, setHoveredButton] = useState<string | null>(null)
-  const { enableAutostart } = useAutostart()
+  // The "Start at login" choice shown on step 3; null until the stored choice is read
+  const [startAtLogin, setStartAtLogin] = useState<boolean | null>(null)
+  const { loading: autostartBusy, error: autostartError, applyStartAtLogin } = useAutostart()
   const isDark = useSystemThemePreference()
 
   // Fixed opacity for the wizard (similar to main app default)
@@ -154,10 +158,20 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
       .then(setConflicts)
       .catch((e) => console.error('Failed to check conflicts:', e))
 
+  // Starts from the stored choice, so the wizard and Settings agree; never chosen means on
+  const loadStartAtLogin = () =>
+    invoke<UserSettings>('get_user_settings')
+      .then((settings) => setStartAtLogin(settings.start_at_login ?? true))
+      .catch((e) => {
+        console.error('Failed to read the start at login choice:', e)
+        setStartAtLogin(true)
+      })
+
   useEffect(() => {
     checkPermissions()
     checkShortcutTools()
     checkConflicts()
+    loadStartAtLogin()
   }, [])
 
   const handleResolveConflicts = async () => {
@@ -205,9 +219,11 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
     }
   }
 
-  const handleEnableAutostart = async () => {
-    await enableAutostart()
-    setStep(4)
+  const handleAutostartContinue = async () => {
+    const applied = await applyStartAtLogin(startAtLogin ?? true)
+    // A failure keeps this step open with the error shown. Continuing again moves on, so a
+    // config directory that cannot be written never traps the wizard.
+    if (applied || autostartError) setStep(4)
   }
 
   const handleComplete = async () => {
@@ -569,7 +585,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
             isDark ? 'text-win11-text-primary' : 'text-win11Light-text-primary'
           )}
         >
-          Start on Login?
+          Start on login
         </h2>
         <p
           className={clsx(
@@ -577,21 +593,49 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
             isDark ? 'text-win11-text-secondary' : 'text-win11Light-text-secondary'
           )}
         >
-          Start automatically when you log in?
+          Start automatically when you log in. You can change this later in Settings.
         </p>
       </div>
+
+      <div className={clsx('mb-4 flex items-center justify-between gap-4', infoCardClass)}>
+        <span
+          className={clsx(
+            'text-sm font-medium',
+            isDark ? 'text-win11-text-primary' : 'text-win11Light-text-primary'
+          )}
+        >
+          Start Win11Clip at login
+        </span>
+        <Switch
+          checked={startAtLogin ?? true}
+          onChange={setStartAtLogin}
+          isDark={isDark}
+          disabled={startAtLogin === null || autostartBusy}
+          label="Start Win11Clip at login"
+        />
+      </div>
+
+      {autostartError && (
+        <div className={clsx('mb-4', statusCardClass('error'))}>
+          <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="font-medium">Could not change start at login</p>
+            <p className="text-xs opacity-90">
+              {autostartError}. Continue to skip it for now, or try again.
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="flex gap-3 justify-center">
         <WizardButton
           {...buttonTheme}
-          id="enable-autostart"
-          onClick={handleEnableAutostart}
+          id="autostart-continue"
+          onClick={handleAutostartContinue}
+          disabled={startAtLogin === null || autostartBusy}
           primary
         >
-          Yes, enable
-        </WizardButton>
-        <WizardButton {...buttonTheme} id="skip-autostart" onClick={() => setStep(4)}>
-          No thanks
+          Continue
         </WizardButton>
       </div>
     </div>,

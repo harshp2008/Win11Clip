@@ -10,6 +10,7 @@ import { FeaturesSection } from './components/FeaturesSection'
 import { Switch } from './components/Switch'
 import { useSystemThemePreference } from './utils/systemTheme'
 import { useRenderingEnv } from './hooks/useRenderingEnv'
+import { useAutostart } from './hooks/useAutostart'
 
 const MIN_HISTORY_SIZE = 1
 const MAX_HISTORY_SIZE = 100_000
@@ -28,6 +29,7 @@ const DEFAULT_SETTINGS: UserSettings = {
   auto_delete_unit: 'hours',
   always_on_top: true,
   close_on_typing_when_unfocused: true,
+  start_at_login: null,
 }
 
 type ThemeMode = 'system' | 'dark' | 'light'
@@ -279,6 +281,58 @@ function KeyboardShortcutsSection({ isDark }: KeyboardShortcutsSectionProps) {
         </button>
       </div>
     </section>
+  )
+}
+
+// --- Start at Login Row ---
+
+/**
+ * Switch for the autostart entry. It shows the real state (never an assumed one), stays disabled
+ * until the first read and while a change is applied, and reports a failed change inline.
+ */
+function StartAtLoginRow({ isDark }: { isDark: boolean }) {
+  const { enabled, loading, error, applyStartAtLogin, checkStatus } = useAutostart()
+
+  // The settings window is only hidden when closed, so read the real state again each time it is
+  // brought back (the entry can have changed meanwhile, e.g. from the setup wizard).
+  useEffect(() => {
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (focused) checkStatus()
+    })
+    return () => {
+      unlisten.then((fn) => fn())
+    }
+  }, [checkStatus])
+
+  return (
+    <div className={clsx('mt-4 pt-4 border-t', isDark ? 'border-white/5' : 'border-gray-100')}>
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-sm font-medium">Start at login</div>
+          <div className={clsx('text-xs mt-0.5', isDark ? 'text-gray-400' : 'text-gray-500')}>
+            Open Win11Clip in the background when you log in
+          </div>
+        </div>
+        <Switch
+          checked={enabled}
+          onChange={(want) => applyStartAtLogin(want)}
+          isDark={isDark}
+          disabled={loading}
+          label="Start at login"
+        />
+      </div>
+      {error && (
+        <p
+          role="alert"
+          className={clsx(
+            'mt-3 text-xs rounded-lg p-3',
+            isDark ? 'bg-red-500/10 text-red-400' : 'bg-red-50 text-red-600'
+          )}
+        >
+          Could not change start at login: {error}
+        </p>
+      )}
+    </div>
   )
 }
 
@@ -657,6 +711,8 @@ function SettingsApp() {
               />
             </div>
           </div>
+
+          <StartAtLoginRow isDark={isDark} />
         </section>
 
         {/* Auto Delete Section */}
