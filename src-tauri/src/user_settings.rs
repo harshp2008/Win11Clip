@@ -64,6 +64,12 @@ pub struct UserSettings {
     /// application while the clipboard panel is visible but unfocused.
     #[serde(default = "default_true")]
     pub close_on_typing_when_unfocused: bool,
+
+    /// The remembered "Start at login" choice: `None` when the user never chose, otherwise
+    /// `Some(true)` (on) or `Some(false)` (off). Never chosen counts as on; see
+    /// `start_at_login_wanted`. Only `set_start_at_login` writes it.
+    #[serde(default)]
+    pub start_at_login: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -110,11 +116,17 @@ impl Default for UserSettings {
             ui_scale: default_ui_scale(),
             always_on_top: true,
             close_on_typing_when_unfocused: true,
+            start_at_login: None,
         }
     }
 }
 
 impl UserSettings {
+    /// Whether the app should have an autostart entry: on unless the user switched it off.
+    pub fn start_at_login_wanted(&self) -> bool {
+        self.start_at_login != Some(false)
+    }
+
     pub fn auto_delete_interval_in_minutes(&self) -> u64 {
         if self.auto_delete_interval == 0 {
             return 0;
@@ -261,5 +273,68 @@ mod tests {
         assert_eq!(settings.theme_mode, "system");
         assert!((settings.dark_background_opacity - 1.0).abs() < f32::EPSILON);
         assert!(settings.light_background_opacity.abs() < f32::EPSILON);
+    }
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("test_user_settings_{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn manager(&self) -> UserSettingsManager {
+            UserSettingsManager {
+                config_dir: self.0.clone(),
+            }
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn start_at_login_has_three_states_and_never_chosen_counts_as_on() {
+        let mut settings = UserSettings::default();
+        assert_eq!(settings.start_at_login, None);
+        assert!(settings.start_at_login_wanted());
+        settings.start_at_login = Some(true);
+        assert!(settings.start_at_login_wanted());
+        settings.start_at_login = Some(false);
+        assert!(!settings.start_at_login_wanted());
+    }
+
+    #[test]
+    fn an_old_settings_file_without_the_field_loads_as_never_chosen() {
+        let tmp = TempDir::new();
+        fs::write(
+            tmp.0.join(USER_SETTINGS_FILE),
+            r#"{"theme_mode":"dark","dark_background_opacity":0.5,"light_background_opacity":0.6}"#,
+        )
+        .unwrap();
+
+        let settings = tmp.manager().load();
+        assert_eq!(settings.theme_mode, "dark");
+        assert_eq!(settings.start_at_login, None);
+        assert!(settings.start_at_login_wanted());
+    }
+
+    #[test]
+    fn the_start_at_login_choice_survives_a_save_and_load() {
+        let tmp = TempDir::new();
+        let manager = tmp.manager();
+        for choice in [Some(true), Some(false), None] {
+            let settings = UserSettings {
+                start_at_login: choice,
+                ..Default::default()
+            };
+            manager.save(&settings).unwrap();
+            assert_eq!(manager.load().start_at_login, choice);
+        }
     }
 }

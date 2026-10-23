@@ -207,24 +207,48 @@ fn migrate_autostart_dir(dir: &Path, exec_path: &str) -> Result<bool, String> {
     Ok(changed)
 }
 
+/// Writes the enabled autostart entry for `exec_path` into `dir`, creating `dir` if needed.
+fn enable_in(dir: &Path, exec_path: &str) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|e| format!("Failed to create autostart directory: {}", e))?;
+
+    write_autostart_file(&autostart_file_in(dir), exec_path, true)?;
+    // An entry of the old name next to the new one would start the app twice.
+    let _ = fs::remove_file(legacy_autostart_file_in(dir));
+    Ok(())
+}
+
+/// Creates the autostart entry in `dir` when `wanted` and no entry (of either name) exists. An
+/// entry that is there is left alone, switched off or not, and so is a missing one when not
+/// `wanted`. Returns whether it created the entry.
+fn ensure_in(dir: &Path, exec_path: &str, wanted: bool) -> Result<bool, String> {
+    if !wanted || autostart_file_in(dir).exists() || legacy_autostart_file_in(dir).exists() {
+        return Ok(false);
+    }
+    enable_in(dir, exec_path)?;
+    Ok(true)
+}
+
+/// On app start: brings back a missing autostart entry unless the user switched "Start at login"
+/// off (`wanted` false). Returns whether it created the entry.
+pub fn ensure_autostart(wanted: bool) -> Result<bool, String> {
+    let autostart_dir = get_autostart_dir().ok_or("Could not determine config directory")?;
+    let created = ensure_in(&autostart_dir, &get_exec_path(), wanted)?;
+    if created {
+        println!("[Autostart] The autostart entry was missing; created it");
+        let _ = ensure_spawn_at_autoupdate();
+    }
+    Ok(created)
+}
+
 /// Enable autostart by creating a .desktop file in ~/.config/autostart/
 #[tauri::command]
 pub fn autostart_enable() -> Result<(), String> {
     let autostart_dir = get_autostart_dir().ok_or("Could not determine config directory")?;
-    let autostart_file = get_autostart_file().ok_or("Could not determine autostart file path")?;
-
-    // Create autostart directory if it doesn't exist
-    fs::create_dir_all(&autostart_dir)
-        .map_err(|e| format!("Failed to create autostart directory: {}", e))?;
 
     // Get the correct executable path (wrapper preferred)
     let exec_path = get_exec_path();
 
-    write_autostart_file(&autostart_file, &exec_path, true)?;
-    // An entry of the old name next to the new one would start the app twice.
-    if let Some(old) = get_legacy_autostart_file() {
-        let _ = fs::remove_file(old);
-    }
+    enable_in(&autostart_dir, &exec_path)?;
 
     println!(
         "[Autostart] Enabled autostart with exec path: {}",
@@ -549,6 +573,61 @@ mod wm_class_tests {
         let tmp = TempDir::new();
         assert!(!migrate_autostart_dir(&tmp.0, EXEC).unwrap());
         assert!(!autostart_file_in(&tmp.0).exists());
+    }
+
+    #[test]
+    fn startup_creates_a_missing_entry_when_wanted() {
+        // "Never chosen" and "on" both reach ensure_in as wanted.
+        let tmp = TempDir::new();
+        let dir = tmp.0.join("autostart"); // the directory itself is missing too
+
+        assert!(ensure_in(&dir, EXEC, true).unwrap());
+        let created = fs::read_to_string(autostart_file_in(&dir)).unwrap();
+        assert_eq!(created, render_entry(EXEC));
+        assert!(created.contains(&format!("sleep 5 && \"{EXEC}\" --background")));
+
+        // Idempotent: the next start finds the entry and does nothing.
+        assert!(!ensure_in(&dir, EXEC, true).unwrap());
+        assert_eq!(
+            fs::read_to_string(autostart_file_in(&dir)).unwrap(),
+            created
+        );
+    }
+
+    #[test]
+    fn startup_does_nothing_when_the_user_switched_it_off() {
+        let tmp = TempDir::new();
+        assert!(!ensure_in(&tmp.0, EXEC, false).unwrap());
+        assert!(!autostart_file_in(&tmp.0).exists());
+    }
+
+    #[test]
+    fn startup_leaves_an_existing_entry_alone_whatever_the_choice() {
+        let tmp = TempDir::new();
+        let file = autostart_file_in(&tmp.0);
+        // An entry switched off from outside (GNOME Tweaks) and one with other content.
+        let switched_off = render_entry(EXEC).replace(
+            "X-GNOME-Autostart-enabled=true",
+            "X-GNOME-Autostart-enabled=false",
+        );
+        for content in [switched_off, "custom content\n".to_string()] {
+            for wanted in [true, false] {
+                fs::write(&file, &content).unwrap();
+                assert!(!ensure_in(&tmp.0, EXEC, wanted).unwrap());
+                assert_eq!(fs::read_to_string(&file).unwrap(), content);
+            }
+        }
+    }
+
+    #[test]
+    fn startup_does_not_add_a_second_entry_next_to_one_of_the_old_name() {
+        let tmp = TempDir::new();
+        let old = legacy_autostart_file_in(&tmp.0);
+        fs::write(&old, old_entry(APP_ID)).unwrap();
+
+        assert!(!ensure_in(&tmp.0, EXEC, true).unwrap());
+        assert!(!autostart_file_in(&tmp.0).exists());
+        assert!(old.exists());
     }
 
     #[test]
