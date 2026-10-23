@@ -202,6 +202,7 @@ for v in APP_ID APP_DISPLAY_NAME APP_CMD APP_BIN PKG_NAME UNINSTALL_CMD OLD_CMD 
     eval "$v=\$(sed -n 's/^$v=\"\\(.*\\)\"\$/\\1/p' \"\$INSTALL_SH\" | head -n1)"
 done
 export HOME="$SANDBOX/home"
+export XDG_CONFIG_HOME="$HOME/.config" XDG_DATA_HOME="$HOME/.local/share" XDG_STATE_HOME="$HOME/.local/state" XDG_CACHE_HOME="$HOME/.cache"
 mkdir -p "$HOME"
 STATE_DIR="$HOME/.local/state/win11clip-installer"
 MANIFEST_DIR="$STATE_DIR"; MANIFEST="$STATE_DIR/installer-manifest"
@@ -397,6 +398,7 @@ seed_system() { # create files of both name sets under the sandbox "system"
     for d in usr/bin usr/local/bin usr/share/applications usr/local/share/applications usr/share/metainfo \
              usr/share/icons/hicolor/128x128/apps usr/share/icons/hicolor/256x256/apps usr/share/icons/hicolor/scalable/apps \
              usr/local/share/icons/hicolor/128x128/apps usr/local/share/icons/hicolor/256x256/apps \
+             usr/local/share/icons/hicolor/scalable/apps usr/local/share/metainfo \
              usr/local/lib/win11clip usr/local/lib/win11-clipboard-history etc/udev/rules.d etc/modules-load.d; do
         mkdir -p "$SYSROOT/$d"
     done
@@ -411,6 +413,9 @@ seed_system() { # create files of both name sets under the sandbox "system"
              usr/share/icons/hicolor/scalable/apps/io.github.harshp2008.win11clip.svg \
              usr/share/icons/hicolor/128x128/apps/win11-clipboard-history.png \
              usr/local/share/icons/hicolor/256x256/apps/win11-clipboard-history.png \
+             usr/local/share/metainfo/io.github.harshp2008.win11clip.metainfo.xml \
+             usr/local/share/icons/hicolor/scalable/apps/io.github.harshp2008.win11clip.svg \
+             usr/local/share/icons/hicolor/scalable/apps/win11-clipboard-history.svg \
              usr/local/lib/win11clip/win11clip-bin usr/local/lib/win11-clipboard-history/win11-clipboard-history-bin \
              etc/udev/rules.d/99-win11-clipboard-input.rules etc/modules-load.d/win11-clipboard.conf; do
         echo x > "$SYSROOT/$f"
@@ -475,6 +480,9 @@ for f in usr/bin/win11clip usr/bin/win11clip-bin usr/bin/win11-clipboard-history
          usr/share/icons/hicolor/128x128/apps/io.github.harshp2008.win11clip.png usr/share/icons/hicolor/256x256/apps/io.github.harshp2008.win11clip.png \
          usr/share/icons/hicolor/scalable/apps/io.github.harshp2008.win11clip.svg usr/share/icons/hicolor/128x128/apps/win11-clipboard-history.png \
          usr/local/share/icons/hicolor/256x256/apps/win11-clipboard-history.png \
+         usr/local/share/metainfo/io.github.harshp2008.win11clip.metainfo.xml \
+         usr/local/share/icons/hicolor/scalable/apps/io.github.harshp2008.win11clip.svg \
+         usr/local/share/icons/hicolor/scalable/apps/win11-clipboard-history.svg \
          usr/local/lib/win11clip usr/local/lib/win11-clipboard-history \
          etc/udev/rules.d/99-win11-clipboard-input.rules etc/modules-load.d/win11-clipboard.conf; do
     check_missing "removed: /$f" "$SYSROOT/$f"
@@ -519,6 +527,10 @@ check_exists "the package's launcher is left in place" "$SYSROOT/usr/bin/win11cl
 check_exists "the package's menu entry is left in place" "$SYSROOT/usr/share/applications/io.github.harshp2008.win11clip.desktop"
 check_missing "files of the old name that no package owns are still removed" "$SYSROOT/usr/local/bin/win11-clipboard-history"
 check_contains "the summary says it is partly uninstalled" "$UNINSTALL_OUT" "Partly uninstalled"
+check_exists "the uninstaller is kept while the package is (so it can be run again)" "$SYSROOT/usr/local/bin/win11clip-uninstall"
+check_exists "and so is the old-name link to it" "$SYSROOT/usr/local/bin/win11-clipboard-uninstall"
+check_contains "the message says the uninstaller was kept and how to delete it" "$UNINSTALL_OUT" "this uninstaller (/usr/local/bin/win11clip-uninstall /usr/local/bin/win11-clipboard-uninstall), because the app package is still installed"
+check_contains "the kept package comes with its removal command" "$UNINSTALL_OUT" "delete: sudo apt-get remove win11clip"
 
 # ================================================================================================
 printf '\n-- Test 9: `make remove-old-name` (and so `make install` / `make uninstall`) removes the old name only\n'
@@ -540,6 +552,177 @@ check_exists "new library folder kept" "$D/usr/local/lib/win11clip/win11clip-bin
 check_exists "new menu entry kept" "$D/usr/local/share/applications/io.github.harshp2008.win11clip.desktop"
 make -s -f "$MAKEFILE" -C "$REPO_ROOT" remove-old-name DESTDIR="$D" >/dev/null
 check_exists "running it twice changes nothing" "$D/usr/local/bin/win11clip"
+
+# ================================================================================================
+printf '\n-- Test 10: a full fake install, then uninstall.sh, leaves exactly the allowed set of files\n'
+# The install is the real `make install` (into the sandbox, from a tree of links, with a stand-in binary)
+# plus the real install.sh functions that write user-level and system files. The fake killall keeps
+# `make install` from signalling the developer's running app. Directories are not compared: the system
+# ones (/usr/local/lib, /etc/udev/rules.d, ...) are shared and are never removed.
+for noop in killall pkill gnome-shell notify-send udevadm modprobe; do
+    printf '#!/bin/sh\necho "%s $*" >> "$SANDBOX/noop.log"\nexit 0\n' "$noop" > "$BIN/$noop"; chmod +x "$BIN/$noop"
+done
+clear_pkgs; reset_dirs "$HOME" "$SYSROOT" "$FAKE_GSETTINGS_STATE"
+mkdir -p "$SYSROOT/usr/bin" "$SYSROOT/usr/local/bin"
+seed_system   # old-name files, user data, and an installer record, as an older install left them
+echo 'backup copy' > "$STATE_DIR/backup/apt-source-note" 2>/dev/null || { mkdir -p "$STATE_DIR/backup"; echo 'backup copy' > "$STATE_DIR/backup/apt-source-note"; }
+
+MINI="$SANDBOX/minitree"
+mkdir -p "$MINI/src-tauri/target/release" "$MINI/scripts"
+printf '#!/bin/sh\nexit 0\n' > "$MINI/src-tauri/target/release/win11clip-bin"
+for l in Makefile extensions bundled-deps; do ln -s "$REPO_ROOT/$l" "$MINI/$l"; done
+for l in icons bundle; do ln -s "$REPO_ROOT/src-tauri/$l" "$MINI/src-tauri/$l"; done
+cp "$UNINSTALL_SH" "$MINI/scripts/uninstall.sh"
+make -s -f "$MINI/Makefile" -C "$MINI" install DESTDIR="$SYSROOT" > "$SANDBOX/make-install.log" 2>&1 \
+    || { fail "make install into the sandbox failed"; tail -n 20 "$SANDBOX/make-install.log" >&2; }
+
+INSTALL_FUNCS=$(
+    for fn in run_user_gsettings remove_ibus_emoji_hotkey install_gnome_extensions install_window_calls; do extract_function "$INSTALL_SH" "$fn"; done
+    # this function holds a heredoc with its own "}" lines, so cut it by line range
+    sed -n '/^setup_post_login_enable()/,/^check_if_restart_required()/p' "$INSTALL_SH" | sed '$d'
+    # the uninstaller goes to /usr/local/bin: point that at the sandbox (install.sh runs it through sudo)
+    extract_function "$INSTALL_SH" install_uninstaller | sed "s#\"/usr/local/bin/#\"$SYSROOT/usr/local/bin/#g"
+)
+check_eq "install.sh's install_uninstaller writes to two /usr/local/bin paths (the test redirects both)" "$(printf '%s' "$INSTALL_FUNCS" | grep -c "$SYSROOT/usr/local/bin/")" "2"
+AUTOSTART_HEREDOC=$(sed -n '/^    cat > "\$autostart_dir\/spawn-at-autoupdate.desktop"/,/^EOF/p' "$INSTALL_SH" | sed 's/^    //')
+[ -n "$AUTOSTART_HEREDOC" ] || fail "the spawn-at autostart entry was not found in install.sh"
+
+# the IBus hotkey as install.sh left it (Super+. taken out), with the user's original saved
+mkdir -p "$STATE_DIR"
+printf '%s\n' "['<Super>period', '<Control><Shift>e']" > "$STATE_DIR/ibus-emoji-hotkey.orig"
+gsettings set org.freedesktop.ibus.panel.emoji hotkey "['<Control><Shift>e']"
+(
+    cd "$REPO_ROOT"
+    eval "$INSTALL_FUNCS"
+    SUDO_USER=""; XDG_SESSION_TYPE=x11; WAYLAND_DISPLAY=""
+    FIRSTRUN_SCRIPT="$STATE_DIR/firstrun.sh"
+    mkdir -p "$SANDBOX/inst/scripts"; cp "$UNINSTALL_SH" "$SANDBOX/inst/scripts/uninstall.sh"
+    (cd "$SANDBOX/inst" && install_uninstaller)
+    install_gnome_extensions
+    setup_post_login_enable
+    autostart_dir="$HOME/.config/autostart"; sa_exec=spawn-at; mkdir -p "$autostart_dir" "$HOME/.local/bin"
+    eval "$AUTOSTART_HEREDOC"
+    echo x > "$autostart_dir/spawn-at-update-check.desktop"   # written by `spawn-at install`
+    echo x > "$HOME/.local/bin/spawn-at"; echo x > "$SYSROOT/usr/local/bin/spawn-at"
+    echo x > "$HOME/.config/autostart/io.github.harshp2008.win11clip.desktop"   # written by the app itself
+    echo "log line" > "$STATE_DIR/firstrun.log"; echo 1 > "$STATE_DIR/firstrun.tries"
+) > "$SANDBOX/install-funcs.log" 2>&1 || { fail "the install.sh functions failed in the sandbox"; cat "$SANDBOX/install-funcs.log" >&2; }
+
+tree_files() { (cd "$SANDBOX" && find root home \( -type f -o -type l \) | sort); }
+# Files that may stay: the user's data, the installer's backups, and the two shared components
+# the uninstaller asks about (window-calls and spawn-at), which a run without a terminal keeps.
+allowed_after_uninstall() {
+    case "$1" in
+        */installer-manifest) return 1 ;;   # the installer's own record, in either place
+        home/.config/win11clip/*|home/.local/share/win11clip/*|home/.cache/win11clip/*) ;;
+        home/.config/win11-clipboard-history/*|home/.local/share/win11-clipboard-history/*|home/.cache/win11-clipboard-history/*) ;;
+        home/.local/state/win11clip-installer/backup/*) ;;
+        home/.local/share/gnome-shell/extensions/window-calls@domandoman.xyz/*) ;;
+        home/.local/bin/spawn-at|root/usr/local/bin/spawn-at) ;;
+        home/.config/autostart/spawn-at-autoupdate.desktop|home/.config/autostart/spawn-at-update-check.desktop) ;;
+        *) return 1 ;;
+    esac
+}
+BEFORE=$(tree_files)
+check_exists "the fake install put the uninstaller in place" "$SYSROOT/usr/local/bin/win11clip-uninstall"
+check_exists "the fake install put the old-name link in place" "$SYSROOT/usr/local/bin/win11-clipboard-uninstall"
+check_exists "the fake install put the metainfo under /usr/local/share" "$SYSROOT/usr/local/share/metainfo/io.github.harshp2008.win11clip.metainfo.xml"
+check_exists "the fake install put the first-login script in place" "$STATE_DIR/firstrun.sh"
+EXPECTED=$(printf '%s\n' "$BEFORE" | while IFS= read -r f; do if allowed_after_uninstall "$f"; then printf '%s\n' "$f"; fi; done)
+
+: > "$SANDBOX/sudo.log"
+set +e
+UNINSTALL_OUT=$(setsid --wait env WIN11CLIP_SYSROOT="$SYSROOT" HOME="$HOME" bash "$SYSROOT/usr/local/bin/win11clip-uninstall" < /dev/null 2>&1)
+UNINSTALL_RC=$?
+set -e
+check_eq "the installed uninstaller runs to the end" "$UNINSTALL_RC" "0"
+AFTER=$(tree_files)
+check_eq "exactly the allowed files remain (a line starting with > is a leftover, one with < is something that was deleted but should stay)" \
+    "$(diff <(printf '%s\n' "$EXPECTED") <(printf '%s\n' "$AFTER") || true)" ""
+check_missing "the uninstaller deleted itself" "$SYSROOT/usr/local/bin/win11clip-uninstall"
+check_missing "and the old-name link to it" "$SYSROOT/usr/local/bin/win11-clipboard-uninstall"
+if [ "$EUID" -ne 0 ]; then
+    LAST_TWO=$(tail -n 2 "$SANDBOX/sudo.log")
+    check_contains "the very last thing the script ran was deleting itself (1/2)" "$(printf '%s\n' "$LAST_TWO" | head -n 1)" "rm -f $SYSROOT/usr/local/bin/win11clip-uninstall"
+    check_contains "the very last thing the script ran was deleting itself (2/2)" "$(printf '%s\n' "$LAST_TWO" | tail -n 1)" "rm -f $SYSROOT/usr/local/bin/win11-clipboard-uninstall"
+fi
+check_contains "the message says the uninstaller itself was removed" "$UNINSTALL_OUT" "this uninstaller (/usr/local/bin/win11clip-uninstall /usr/local/bin/win11-clipboard-uninstall), deleted as the very last step"
+check_contains "the message tells the shell to forget the old path" "$UNINSTALL_OUT" "hash -r"
+check_contains "the kept list names the backups folder" "$UNINSTALL_OUT" "$STATE_DIR/backup"
+check_contains "the kept list says how to delete the backups" "$UNINSTALL_OUT" "delete: rm -rf ~/.local/state/win11clip-installer"
+check_contains "the kept list names window-calls and how to delete it" "$UNINSTALL_OUT" "delete: rm -rf ~/.local/share/gnome-shell/extensions/window-calls@domandoman.xyz"
+check_contains "the kept list names spawn-at and how to delete it" "$UNINSTALL_OUT" "~/.config/autostart/spawn-at-*.desktop"
+check_contains "the kept list names the system copy of spawn-at" "$UNINSTALL_OUT" "sudo rm -f /usr/local/bin/spawn-at"
+for d in .config/win11clip .local/share/win11clip .cache/win11clip; do
+    check_contains "the kept list gives the command that deletes ~/$d" "$UNINSTALL_OUT" "delete: rm -rf ~/$d"
+done
+check_eq "the IBus emoji hotkey is back to the user's original" "$(gsettings get org.freedesktop.ibus.panel.emoji hotkey)" "['<Super>period', '<Control><Shift>e']"
+check_missing "and its saved copy is gone" "$STATE_DIR/ibus-emoji-hotkey.orig"
+check_missing "the fake sudo blocked nothing" "$SANDBOX/blocked.log"
+
+# the same run without anything in the installer's state folder: the folder itself must not be left
+reset_dirs "$HOME"; mkdir -p "$STATE_DIR" "$HOME/.config/win11-clipboard-history"
+echo 'nvm-installed' > "$STATE_DIR/installer-manifest"; echo 'apt-build:x' > "$HOME/.config/win11-clipboard-history/installer-manifest"
+set +e
+setsid --wait env WIN11CLIP_SYSROOT="$SYSROOT" HOME="$HOME" bash "$UNINSTALL_SH" < /dev/null > /dev/null 2>&1
+set -e
+check_missing "an installer state folder with nothing left in it is removed" "$STATE_DIR"
+check_missing "so is the old config folder that held only the installer's record" "$HOME/.config/win11-clipboard-history"
+
+# ================================================================================================
+printf '\n-- Test 11: the closing box is aligned, for the shortest and the longest text\n'
+BOXFUNCS=$( { extract_function "$UNINSTALL_SH" box_edge; extract_function "$UNINSTALL_SH" box_row; } )
+[ -n "$BOXFUNCS" ] || fail "box_edge / box_row not found in uninstall.sh"
+box_widths() { # prints the set of visible widths of the lines of a box built from the given texts
+    (
+        eval "$BOXFUNCS"; BOX_WIDTH=62; BLUE=$'\033[0;34m'; NC=$'\033[0m'; GREEN=$'\033[0;32m'
+        box_edge "┌" "┐"; local_t=("$@")
+        for t in "${local_t[@]}"; do box_row "$GREEN" "$t"; done
+        box_edge "└" "┘"
+    ) | python3 -I -c '
+import re, sys
+print(sorted({len(re.sub(r"\x1b\[[0-9;]*m", "", l.rstrip("\n"))) for l in sys.stdin}))'
+}
+LONGEST="The app package may still be installed (kept or failed)."
+check_eq "shortest text" "$(box_widths "a")" "[64]"
+check_eq "empty text" "$(box_widths "")" "[64]"
+check_eq "the longest message the script prints" "$(box_widths "$LONGEST")" "[64]"
+check_eq "text with a multi-byte character (the check mark)" "$(box_widths "✓ Uninstallation Complete!" "Win11Clip has been removed.")" "[64]"
+check_eq "a text exactly as wide as the box" "$(box_widths "$(printf 'x%.0s' $(seq 1 60))")" "[64]"
+check_eq "a text wider than the box is not cut, and the other lines keep their width" "$(box_widths "short" "$(printf 'x%.0s' $(seq 1 90))")" "[64, 94]"
+BOX_LINES=$(printf '%s\n' "$UNINSTALL_OUT" | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^[┌│└]')
+check_eq "the box in the real output is 64 columns wide on every line" \
+    "$(printf '%s\n' "$BOX_LINES" | python3 -I -c 'import sys; print(sorted({len(l.rstrip("\n")) for l in sys.stdin}))')" "[64]"
+check_contains "and it has the removed line" "$BOX_LINES" "Win11Clip has been removed."
+
+# ================================================================================================
+printf '\n-- Test 12: answering Yes to the prompts removes window-calls and spawn-at, and the uninstaller still goes last\n'
+if command -v script >/dev/null 2>&1; then
+    clear_pkgs; reset_dirs "$HOME" "$SYSROOT" "$FAKE_GSETTINGS_STATE"; seed_system
+    mkdir -p "$HOME/.local/share/gnome-shell/extensions/window-calls@domandoman.xyz" "$HOME/.local/share/gnome-shell/extensions/spawn-at@harsh.local" "$HOME/.config/spawn-at"
+    echo x > "$HOME/.local/share/gnome-shell/extensions/window-calls@domandoman.xyz/extension.js"
+    echo x > "$HOME/.local/share/gnome-shell/extensions/spawn-at@harsh.local/extension.js"
+    printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/spawn-at"; chmod +x "$HOME/.local/bin/spawn-at"
+    echo x > "$SYSROOT/usr/local/bin/spawn-at"
+    echo x > "$HOME/.config/autostart/spawn-at-autoupdate.desktop"; echo x > "$HOME/.config/autostart/spawn-at-update-check.desktop"
+    # a pseudo-terminal gives the prompts a /dev/tty; the answers are typed with pauses because the menu
+    # throws away keys typed before it is drawn. The run is bounded by timeout.
+    set +e
+    TTY_OUT=$( { sleep 1; printf 'y\n'; sleep 1; printf '2'; sleep 1; printf 'y\n'; sleep 2; } \
+        | timeout 60 script -qec "env WIN11CLIP_SYSROOT='$SYSROOT' HOME='$HOME' bash '$UNINSTALL_SH'" /dev/null 2>&1 )
+    set -e
+    check_missing "window-calls was removed after a Yes" "$HOME/.local/share/gnome-shell/extensions/window-calls@domandoman.xyz"
+    check_missing "the spawn-at extension was removed after choosing Remove and confirming" "$HOME/.local/share/gnome-shell/extensions/spawn-at@harsh.local"
+    check_missing "the user's spawn-at was removed" "$HOME/.local/bin/spawn-at"
+    check_missing "the system spawn-at was removed" "$SYSROOT/usr/local/bin/spawn-at"
+    check_missing "the spawn-at login entries were removed" "$HOME/.config/autostart/spawn-at-autoupdate.desktop"
+    check_missing "(both)" "$HOME/.config/autostart/spawn-at-update-check.desktop"
+    check_contains "it lists them as removed" "$TTY_OUT" "spawn-at (binary, extension, login entries)"
+    check_not_contains "nothing is listed as kept for them" "$TTY_OUT" "which other shortcuts may use"
+    check_missing "the uninstaller still deleted itself" "$SYSROOT/usr/local/bin/win11clip-uninstall"
+else
+    printf 'SKIP: script(1) is not installed; the Yes-path of the prompts was not tested\n'
+fi
 
 # --- results ---------------------------------------------------------------------------------------
 printf '\n== Results: %d passed, %d failed ==\n' "$PASS" "$FAIL"
