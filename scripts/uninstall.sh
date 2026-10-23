@@ -274,7 +274,7 @@ if [ -d "$WC_LOCAL" ]; then
         fi
     else
         success "Kept window-calls."
-        SUMMARY_KEPT+=("window-calls")
+        SUMMARY_KEPT+=("window-calls, a GNOME extension that other tools may use|rm -rf ~/.local/share/gnome-shell/extensions/$WC_UUID")
         [ ${#WC_BACKUPS[@]} -gt 0 ] && echo "    Your earlier copy stays saved in ${WC_BACKUPS[0]} (it was replaced by the patched build)."
     fi
 fi
@@ -415,7 +415,9 @@ if [ -e "$SPAWN_AT_USER_BIN" ] || [ -e "$SPAWN_AT_SYSTEM_BIN" ] || [ -d "$SPAWN_
         SUMMARY_REMOVED+=("spawn-at (binary, extension, login entries)")
     else
         success "Kept spawn-at."
-        SUMMARY_KEPT+=("spawn-at")
+        spawn_at_delete="rm -rf ~/.local/bin/spawn-at ~/.config/spawn-at ~/.config/autostart/spawn-at-*.desktop ~/.local/share/gnome-shell/extensions/$SPAWN_AT_UUID"
+        if [ -e "$SPAWN_AT_SYSTEM_BIN" ] || [ -L "$SPAWN_AT_SYSTEM_BIN" ]; then spawn_at_delete="$spawn_at_delete; sudo rm -f ${SPAWN_AT_SYSTEM_BIN#$SYSROOT}"; fi
+        SUMMARY_KEPT+=("spawn-at (program, GNOME extension and its login update entries), which other shortcuts may use|$spawn_at_delete")
     fi
 fi
 
@@ -538,12 +540,12 @@ for pkg in "$PKG_NAME" "$OLD_PKG_NAME"; do
         else
             warn "Could not remove the package. Run it yourself: sudo ${PKG_REMOVE[*]}"
             PACKAGE_KEPT=true; KEPT_PACKAGES+=("$pkg")
-            SUMMARY_KEPT+=("package $pkg $PKG_VERSION (removal failed)")
+            SUMMARY_KEPT+=("package $pkg $PKG_VERSION (removal failed; the app files in /usr are still there)|sudo ${PKG_REMOVE[*]}")
         fi
     else
         PACKAGE_KEPT=true; KEPT_PACKAGES+=("$pkg")
         success "Kept the package. Remove it later with: sudo ${PKG_MANAGER/apt/apt-get} remove $pkg"
-        SUMMARY_KEPT+=("package $pkg $PKG_VERSION (app files in /usr)")
+        SUMMARY_KEPT+=("package $pkg $PKG_VERSION (you chose to keep it; the app files in /usr are still there)|sudo ${PKG_MANAGER/apt/apt-get} remove $pkg")
     fi
 done
 
@@ -584,24 +586,25 @@ for target in \
     "$SYSROOT/usr/local/bin/$APP_BIN" \
     "$SYSROOT/usr/local/bin/$OLD_CMD" \
     "$SYSROOT/usr/local/bin/$OLD_BIN" \
-    "$SYSROOT/usr/local/bin/$UNINSTALL_CMD" \
-    "$SYSROOT/usr/local/bin/$OLD_UNINSTALL_CMD" \
     "$SYSROOT/usr/share/applications/$APP_ID.desktop" \
     "$SYSROOT/usr/share/applications/$APP_CMD.desktop" \
     "$SYSROOT/usr/share/applications/$OLD_CMD.desktop" \
     "$SYSROOT/usr/local/share/applications/$APP_ID.desktop" \
     "$SYSROOT/usr/local/share/applications/$OLD_CMD.desktop" \
     "$SYSROOT/usr/share/metainfo/$APP_ID.metainfo.xml" \
+    "$SYSROOT/usr/local/share/metainfo/$APP_ID.metainfo.xml" \
     "$SYSROOT/usr/share/icons/hicolor/128x128/apps/$APP_ID.png" \
     "$SYSROOT/usr/share/icons/hicolor/256x256/apps/$APP_ID.png" \
     "$SYSROOT/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg" \
     "$SYSROOT/usr/local/share/icons/hicolor/128x128/apps/$APP_ID.png" \
     "$SYSROOT/usr/local/share/icons/hicolor/256x256/apps/$APP_ID.png" \
+    "$SYSROOT/usr/local/share/icons/hicolor/scalable/apps/$APP_ID.svg" \
     "$SYSROOT/usr/share/icons/hicolor/128x128/apps/$OLD_CMD.png" \
     "$SYSROOT/usr/share/icons/hicolor/256x256/apps/$OLD_CMD.png" \
     "$SYSROOT/usr/share/icons/hicolor/scalable/apps/$OLD_CMD.svg" \
     "$SYSROOT/usr/local/share/icons/hicolor/128x128/apps/$OLD_CMD.png" \
     "$SYSROOT/usr/local/share/icons/hicolor/256x256/apps/$OLD_CMD.png" \
+    "$SYSROOT/usr/local/share/icons/hicolor/scalable/apps/$OLD_CMD.svg" \
     "$SYSROOT/etc/udev/rules.d/99-win11-clipboard-input.rules" \
     "$SYSROOT/etc/modules-load.d/win11-clipboard.conf"; do
     if [ -e "$target" ] || [ -L "$target" ]; then
@@ -616,11 +619,11 @@ done
 # Where `make install` (the --build path) puts the app binary, under both names
 $SUDO_CMD rm -rf "$SYSROOT/usr/local/lib/$APP_CMD" "$SYSROOT/usr/local/lib/$OLD_CMD"
 
-success "Configuration and binaries removed."
-if [ -d "$BACKUP_DIR" ]; then
-    echo "    Backups of what install.sh removed are kept in $BACKUP_DIR"
-    echo "    (delete them when you no longer need them: rm -rf ~/.local/state/win11clip-installer)"
-fi
+# Folders the installer made for its own records. rmdir only removes an empty folder, so nothing
+# that holds anything (backups, the old app's settings) is touched.
+rmdir "$HOME/.config/win11-clipboard-history" "$STATE_DIR" 2>/dev/null || true
+
+success "Program files, menu entries and login entries removed."
 
 # The user's data is never deleted here. Say exactly which folders exist and were left.
 DATA_KEPT=()
@@ -628,31 +631,86 @@ for dir in "$HOME/.config/win11clip" "$HOME/.local/share/win11clip" "$HOME/.cach
            "$HOME/.config/win11-clipboard-history" "$HOME/.local/share/win11-clipboard-history" "$HOME/.cache/win11-clipboard-history"; do
     [ -e "$dir" ] && DATA_KEPT+=("$dir")
 done
-echo ""
-if [ ${#DATA_KEPT[@]} -gt 0 ]; then
-    echo "Your clipboard history, settings and caches were NOT deleted. These folders are still there:"
-    printf '  - %s\n' "${DATA_KEPT[@]}"
-    echo "    Delete them yourself if you want them gone; keep them if you will reinstall $APP_DISPLAY_NAME."
-else
-    echo "No clipboard history, settings or cache folders of $APP_DISPLAY_NAME were found; nothing of yours was deleted."
+
+# This uninstaller deletes itself as its last action (see remove_uninstaller at the end), unless the
+# app package is kept. Say which, before it happens.
+UNINSTALLER_FILES=()
+for f in "$SYSROOT/usr/local/bin/$UNINSTALL_CMD" "$SYSROOT/usr/local/bin/$OLD_UNINSTALL_CMD"; do
+    if [ -e "$f" ] || [ -L "$f" ]; then UNINSTALLER_FILES+=("${f#$SYSROOT}"); fi
+done
+if [ ${#UNINSTALLER_FILES[@]} -gt 0 ]; then
+    if [ "$PACKAGE_KEPT" = true ]; then
+        SUMMARY_KEPT+=("this uninstaller (${UNINSTALLER_FILES[*]}), because the app package is still installed: run it again once the package is removed|sudo rm -f ${UNINSTALLER_FILES[*]}")
+    else
+        SUMMARY_REMOVED+=("this uninstaller (${UNINSTALLER_FILES[*]}), deleted as the very last step")
+    fi
 fi
 
-# What was removed and what was left alone
 echo ""
 if [ ${#SUMMARY_REMOVED[@]} -gt 0 ]; then
     echo "Removed:"; printf '  - %s\n' "${SUMMARY_REMOVED[@]}"
-fi
-if [ ${#SUMMARY_KEPT[@]} -gt 0 ]; then
-    echo "Kept (you chose to, or it could not be removed):"; printf '  - %s\n' "${SUMMARY_KEPT[@]}"
+    echo ""
 fi
 
-# Display completion message
-echo -e "\n${BLUE}┌──────────────────────────────────────────────────────────────┐${NC}"
-if [ "$PACKAGE_KEPT" = true ]; then
-echo -e "${BLUE}│${NC}  ${YELLOW}! Partly uninstalled.${NC}                                       ${BLUE}│${NC}"
-echo -e "${BLUE}│${NC}  The app package may still be installed (kept or failed).    ${BLUE}│${NC}"
+echo "Kept, on purpose. Nothing below was deleted:"
+if [ ${#DATA_KEPT[@]} -gt 0 ]; then
+    echo "  - Your clipboard history, settings and caches were NOT deleted. These folders are still there:"
+    for dir in "${DATA_KEPT[@]}"; do
+        echo "      $dir"
+        echo "          delete: rm -rf ~${dir#$HOME}"
+    done
+    echo "      (keep them if you will reinstall $APP_DISPLAY_NAME)"
 else
-echo -e "${BLUE}│${NC}  ${GREEN}✓ Uninstallation Complete!${NC}                                  ${BLUE}│${NC}"
-echo -e "${BLUE}│${NC}  $APP_DISPLAY_NAME has been removed.                                    ${BLUE}│${NC}"
+    echo "  - No clipboard history, settings or cache folders of $APP_DISPLAY_NAME were found; nothing of yours was deleted."
 fi
-echo -e "${BLUE}└──────────────────────────────────────────────────────────────┘${NC}\n"
+if [ -d "$BACKUP_DIR" ]; then
+    echo "  - Backups of what install.sh removed or replaced (apt sources, packages, window-calls copies): $BACKUP_DIR"
+    echo "          delete: rm -rf ~/.local/state/win11clip-installer"
+fi
+for entry in "${SUMMARY_KEPT[@]}"; do
+    echo "  - ${entry%%|*}"
+    echo "          delete: ${entry#*|}"
+done
+
+# Display completion message
+BOX_WIDTH=62
+box_edge() {   # left corner, right corner
+    local fill; printf -v fill '%*s' "$BOX_WIDTH" ''
+    echo -e "${BLUE}$1${fill// /─}$2${NC}"
+}
+# One row of the box. The padding is computed from the visible length of the text; ${#text} counts
+# bytes in a C locale, and ✓ is three of them, so count the bytes that are not UTF-8 continuation bytes.
+box_row() {   # colour, text
+    local text="  $2" len
+    len=$(printf '%s' "$text" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c)
+    printf '%b│%b%b%s%b%*s%b│%b\n' "$BLUE" "$NC" "$1" "$text" "$NC" "$(( BOX_WIDTH > len ? BOX_WIDTH - len : 0 ))" "" "$BLUE" "$NC"
+}
+echo ""
+box_edge "┌" "┐"
+if [ "$PACKAGE_KEPT" = true ]; then
+    box_row "$YELLOW" "! Partly uninstalled."
+    box_row "" "The app package may still be installed (kept or failed)."
+else
+    box_row "$GREEN" "✓ Uninstallation Complete!"
+    box_row "" "$APP_DISPLAY_NAME has been removed."
+fi
+box_edge "└" "┘"
+if [ "$PACKAGE_KEPT" != true ] && [ ${#UNINSTALLER_FILES[@]} -gt 0 ]; then
+    echo ""
+    echo "If this terminal still finds $UNINSTALL_CMD, it is only remembering the old path: run  hash -r"
+fi
+echo ""
+
+# The very last action: delete this uninstaller and the old-name link to it. The file is open in
+# bash while it runs, so removing it here is safe, but only as the final command: nothing may follow.
+# Kept when the app package is kept, so that the uninstaller can be run again after the package is gone.
+remove_uninstaller() {
+    local f
+    for f in "$SYSROOT/usr/local/bin/$UNINSTALL_CMD" "$SYSROOT/usr/local/bin/$OLD_UNINSTALL_CMD"; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        $SUDO_CMD rm -f "$f" 2>/dev/null || true
+        if [ -e "$f" ] || [ -L "$f" ]; then warn "Could not remove $f. Run: sudo rm $f"; fi
+    done
+}
+if [ "$PACKAGE_KEPT" = true ]; then exit 0; fi
+remove_uninstaller; exit 0
