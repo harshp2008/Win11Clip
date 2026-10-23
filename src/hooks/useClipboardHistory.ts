@@ -11,19 +11,29 @@ export function useClipboardHistory() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // Fetch initial history
+  // Load history from the backend. State is only set from the promise callbacks.
+  // isLoading starts as true, so the initial load can use this directly.
+  const loadHistory = useCallback(
+    () =>
+      invoke<ClipboardItem[]>('get_history')
+        .then((items) => {
+          setHistory(items)
+          setError(null)
+        })
+        .catch((err) => {
+          setError(err instanceof Error ? err.message : 'Failed to fetch history')
+        })
+        .finally(() => {
+          setIsLoading(false)
+        }),
+    []
+  )
+
+  // Refetch history, showing the loading state while it runs
   const fetchHistory = useCallback(async () => {
-    try {
-      setIsLoading(true)
-      const items = await invoke<ClipboardItem[]>('get_history')
-      setHistory(items)
-      setError(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch history')
-    } finally {
-      setIsLoading(false)
-    }
-  }, [])
+    setIsLoading(true)
+    await loadHistory()
+  }, [loadHistory])
 
   // Clear all history
   const clearHistory = useCallback(async () => {
@@ -102,7 +112,7 @@ export function useClipboardHistory() {
 
   // Listen for clipboard changes
   useEffect(() => {
-    fetchHistory()
+    loadHistory()
 
     let isMounted = true
     let unlistenChanged: UnlistenFn | undefined
@@ -158,7 +168,7 @@ export function useClipboardHistory() {
       unlistenCleared?.()
       unlistenSync?.()
     }
-  }, [fetchHistory])
+  }, [loadHistory, fetchHistory])
 
   return {
     history,
