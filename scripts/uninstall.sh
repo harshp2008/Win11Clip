@@ -584,8 +584,6 @@ for target in \
     "$SYSROOT/usr/local/bin/$APP_BIN" \
     "$SYSROOT/usr/local/bin/$OLD_CMD" \
     "$SYSROOT/usr/local/bin/$OLD_BIN" \
-    "$SYSROOT/usr/local/bin/$UNINSTALL_CMD" \
-    "$SYSROOT/usr/local/bin/$OLD_UNINSTALL_CMD" \
     "$SYSROOT/usr/share/applications/$APP_ID.desktop" \
     "$SYSROOT/usr/share/applications/$APP_CMD.desktop" \
     "$SYSROOT/usr/share/applications/$OLD_CMD.desktop" \
@@ -663,3 +661,17 @@ echo -e "${BLUE}│${NC}  ${GREEN}✓ Uninstallation Complete!${NC}             
 echo -e "${BLUE}│${NC}  $APP_DISPLAY_NAME has been removed.                                    ${BLUE}│${NC}"
 fi
 echo -e "${BLUE}└──────────────────────────────────────────────────────────────┘${NC}\n"
+
+# The very last action: delete this uninstaller and the old-name link to it. The file is open in
+# bash while it runs, so removing it here is safe, but only as the final command: nothing may follow.
+# Kept when the app package is kept, so that the uninstaller can be run again after the package is gone.
+remove_uninstaller() {
+    local f
+    for f in "$SYSROOT/usr/local/bin/$UNINSTALL_CMD" "$SYSROOT/usr/local/bin/$OLD_UNINSTALL_CMD"; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        $SUDO_CMD rm -f "$f" 2>/dev/null || true
+        if [ -e "$f" ] || [ -L "$f" ]; then warn "Could not remove $f. Run: sudo rm $f"; fi
+    done
+}
+if [ "$PACKAGE_KEPT" = true ]; then exit 0; fi
+remove_uninstaller; exit 0
