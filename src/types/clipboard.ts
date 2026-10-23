@@ -80,6 +80,8 @@ export interface UserSettings {
   always_on_top: boolean
   /** Hide the window when the user types in another app while it is visible. */
   close_on_typing_when_unfocused: boolean
+  /** The remembered "Start at login" choice; null until the user chooses (counts as on). */
+  start_at_login: boolean | null
 }
 
 /** Helper type for boolean settings keys */
