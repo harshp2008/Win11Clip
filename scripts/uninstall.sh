@@ -1,5 +1,5 @@
 #!/bin/bash
-# uninstall.sh - Win11 Clipboard History Uninstaller
+# uninstall.sh - Win11Clip Uninstaller
 # Usage: curl -fsSL https://raw.githubusercontent.com/harshp2008/Win11Clip/master/scripts/uninstall.sh | bash
 
 set -e
@@ -28,9 +28,28 @@ if [ "$EUID" -ne 0 ]; then
     SUDO_CMD="sudo"
 fi
 
+# Prefix of every system path below (/usr, /etc). Empty on a real system; the tests point it at a
+# throwaway folder so that they can run this whole script without touching the real system.
+SYSROOT="${WIN11CLIP_SYSROOT:-}"
+
 # Things install.sh recorded as added by itself (build tools). Anything not listed predates
-# the install and is never removed here.
-MANIFEST="$HOME/.config/win11-clipboard-history/installer-manifest"
+# the install and is never removed here. Installers from before the rename kept the record in the
+# app's config folder; both places are read, and only the record itself is deleted.
+MANIFEST="$HOME/.local/state/win11clip-installer/installer-manifest"
+OLD_MANIFEST="$HOME/.config/win11-clipboard-history/installer-manifest"
+
+# The names of the app, and the names it had before it was called Win11Clip. Both sets are removed.
+# The old package name is also the upstream project's package name.
+APP_ID="io.github.harshp2008.win11clip"
+APP_DISPLAY_NAME="Win11Clip"
+APP_CMD="win11clip"
+APP_BIN="win11clip-bin"
+PKG_NAME="win11clip"
+UNINSTALL_CMD="win11clip-uninstall"
+OLD_CMD="win11-clipboard-history"
+OLD_BIN="win11-clipboard-history-bin"
+OLD_PKG_NAME="win11-clipboard-history"
+OLD_UNINSTALL_CMD="win11-clipboard-uninstall"
 
 # Where install.sh saved the user's original IBus emoji hotkey (it changes it for Super+.).
 STATE_DIR="$HOME/.local/state/win11clip-installer"
@@ -113,31 +132,34 @@ SUMMARY_KEPT=()
 
 echo ""
 echo "╔═══════════════════════════════════════════════════════════╗"
-echo "║     Win11 Clipboard History - Uninstaller                 ║"
+echo "║     Win11Clip - Uninstaller                               ║"
 echo "╚═══════════════════════════════════════════════════════════╝"
 echo ""
 
 # Process ids of the running app: a process whose executable (or, for the wrapper script, whose script)
-# is named exactly win11-clipboard-history, win11-clipboard-history-bin or win11-clipboard-history.AppImage.
+# is named exactly win11clip, win11clip-bin or win11clip.AppImage, or one of the old names
+# win11-clipboard-history, win11-clipboard-history-bin or win11-clipboard-history.AppImage.
 # `pkill -f` is not used: it matches any command line that merely contains the text (an editor open on
-# a file with that name, a shell, this script's caller). `pkill -x` with the full name is not possible
+# a file with that name, a shell, this script's caller). `pkill -x` with a full old name is not possible
 # either: the kernel keeps only 15 characters of a process name, so procps refuses longer names and
-# matches nothing. So take the processes named "win11-clipboard" (the first 15 characters) and keep
-# those whose executable name is exactly ours.
+# matches nothing. So take the processes named like the first 15 characters of a name (for the new
+# binary that is the whole name) and keep those whose executable name is exactly ours.
 app_pids() {
-    local pid exe name
-    for pid in $(pgrep -x win11-clipboard 2>/dev/null || true); do
-        exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || continue
-        exe="${exe% (deleted)}"
-        name="${exe##*/}"
-        case "$name" in
-            bash|sh|dash)   # the wrapper script: the script's name is the first argument that is not an option
-                name=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | awk 'NR>1 && $0 !~ /^-/ {print; exit}')
-                name="${name##*/}" ;;
-        esac
-        case "$name" in
-            win11-clipboard-history|win11-clipboard-history-bin|win11-clipboard-history.AppImage) echo "$pid" ;;
-        esac
+    local pid exe name comm
+    for comm in win11-clipboard win11clip-bin win11clip.AppIm win11clip; do
+        for pid in $(pgrep -x "$comm" 2>/dev/null || true); do
+            exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || continue
+            exe="${exe% (deleted)}"
+            name="${exe##*/}"
+            case "$name" in
+                bash|sh|dash)   # the wrapper script: the script's name is the first argument that is not an option
+                    name=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | awk 'NR>1 && $0 !~ /^-/ {print; exit}')
+                    name="${name##*/}" ;;
+            esac
+            case "$name" in
+                "$APP_CMD"|"$APP_BIN"|"$APP_CMD.AppImage"|"$OLD_CMD"|"$OLD_BIN"|"$OLD_CMD.AppImage") echo "$pid" ;;
+            esac
+        done
     done
 }
 
@@ -159,7 +181,7 @@ if command -v gnome-extensions &>/dev/null; then
     gnome-extensions disable "$BRIDGE_UUID" 2>/dev/null || true
 fi
 rm -rf "$HOME/.local/share/gnome-shell/extensions/$BRIDGE_UUID"
-$SUDO_CMD rm -rf "/usr/share/gnome-shell/extensions/$BRIDGE_UUID" 2>/dev/null || true
+$SUDO_CMD rm -rf "$SYSROOT/usr/share/gnome-shell/extensions/$BRIDGE_UUID" 2>/dev/null || true
 success "win11-clipboard-bridge removed."
 
 # 2b. Things install.sh removed with your consent (see its backups), and old upstream sources
@@ -167,10 +189,14 @@ BACKUP_DIR="$HOME/.local/state/win11clip-installer/backup"
 REMOVED_SOURCES=()
 REMOVED_PACKAGE=""
 RESTORED_SOURCES=false
-if [ -f "$MANIFEST" ]; then
-    while IFS= read -r line; do REMOVED_SOURCES+=("${line#removed-source:}"); done < <(grep '^removed-source:' "$MANIFEST")
-    REMOVED_PACKAGE=$(sed -n 's/^removed-package://p' "$MANIFEST" | head -n 1)
-fi
+for record in "$MANIFEST" "$OLD_MANIFEST"; do
+    [ -f "$record" ] || continue
+    while IFS= read -r line; do
+        case " ${REMOVED_SOURCES[*]} " in *" ${line#removed-source:} "*) continue ;; esac
+        REMOVED_SOURCES+=("${line#removed-source:}")
+    done < <(grep '^removed-source:' "$record" || true)
+    [ -n "$REMOVED_PACKAGE" ] || REMOVED_PACKAGE=$(sed -n 's/^removed-package://p' "$record" | head -n 1)
+done
 
 if [ ${#REMOVED_SOURCES[@]} -gt 0 ]; then
     echo ""
@@ -201,10 +227,10 @@ fi
 
 # Any other leftover upstream source (older installers added it without recording it).
 LEGACY_SOURCES=()
-for f in /etc/apt/sources.list.d/gustavosett-clipboard-manager.list \
-         /usr/share/keyrings/gustavosett-clipboard-manager-archive-keyring.gpg \
-         /etc/yum.repos.d/gustavosett-clipboard-manager*.repo \
-         /etc/zypp/repos.d/gustavosett-clipboard-manager*.repo; do
+for f in "$SYSROOT"/etc/apt/sources.list.d/gustavosett-clipboard-manager.list \
+         "$SYSROOT"/usr/share/keyrings/gustavosett-clipboard-manager-archive-keyring.gpg \
+         "$SYSROOT"/etc/yum.repos.d/gustavosett-clipboard-manager*.repo \
+         "$SYSROOT"/etc/zypp/repos.d/gustavosett-clipboard-manager*.repo; do
     [ -f "$f" ] && LEGACY_SOURCES+=("$f")
 done
 if [ "$RESTORED_SOURCES" != true ] && [ ${#LEGACY_SOURCES[@]} -gt 0 ]; then
@@ -258,7 +284,7 @@ fi
 # machines that an earlier installer (or `make install`) put it on. Nothing else is ours: a
 # spawn-at in /usr/bin or elsewhere on the PATH belongs to a package or to you and is never touched.
 SPAWN_AT_USER_BIN="$HOME/.local/bin/spawn-at"
-SPAWN_AT_SYSTEM_BIN="/usr/local/bin/spawn-at"
+SPAWN_AT_SYSTEM_BIN="$SYSROOT/usr/local/bin/spawn-at"
 SPAWN_AT_BIN=""
 if [ -x "$SPAWN_AT_USER_BIN" ]; then
     SPAWN_AT_BIN="$SPAWN_AT_USER_BIN"
@@ -268,7 +294,7 @@ fi
 
 SPAWN_AT_UUID="spawn-at@harsh.local"
 SPAWN_AT_LOCAL_EXT="$HOME/.local/share/gnome-shell/extensions/$SPAWN_AT_UUID"
-SPAWN_AT_SYS_EXT="/usr/share/gnome-shell/extensions/$SPAWN_AT_UUID"
+SPAWN_AT_SYS_EXT="$SYSROOT/usr/share/gnome-shell/extensions/$SPAWN_AT_UUID"
 
 if [ -e "$SPAWN_AT_USER_BIN" ] || [ -e "$SPAWN_AT_SYSTEM_BIN" ] || [ -d "$SPAWN_AT_LOCAL_EXT" ] || [ -d "$SPAWN_AT_SYS_EXT" ]; then
     echo ""
@@ -407,6 +433,9 @@ for named_path in [
     "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/win11-clipboard-history/",
     "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/win11-clipboard-history-emoji/",
     "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/win11-clipboard-history-alt/",
+    "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/win11clip/",
+    "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/win11clip-emoji/",
+    "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/win11clip-alt/",
 ]:
     subprocess.run(["gsettings", "reset-recursively", f"{schema}.custom-keybinding:{named_path}"], check=False)
 
@@ -425,9 +454,10 @@ try:
         try:
             cmd = subprocess.check_output(["gsettings", "get", base_schema, "command"], text=True).strip().strip("\x27\"")
             name = subprocess.check_output(["gsettings", "get", base_schema, "name"], text=True).strip().strip("\x27\"")
-            # Old-form commands (no -c, or the upstream class) and the current one (-c io.github.harshp2008.win11clip)
-            # all run win11-clipboard-history through spawn-at, so these tokens match every form.
-            if any(k in cmd for k in ["win11-clipboard-history", "io.github.harshp2008.win11clip", "dev.gustavosett.clipboard-history", "spawn-at"]) or "Clipboard History" in name:
+            # Old-form commands (the old command win11-clipboard-history, with no -c, the upstream class or this
+            # app'"'"'s own) and the current one (-c io.github.harshp2008.win11clip win11clip) all run through
+            # spawn-at, so these tokens match every form.
+            if any(k in cmd for k in ["win11-clipboard-history", "win11clip", "io.github.harshp2008.win11clip", "dev.gustavosett.clipboard-history", "spawn-at"]) or "Clipboard History" in name or "Win11Clip" in name:
                 subprocess.run(["gsettings", "reset-recursively", base_schema], check=False)
             else:
                 keep.append(path)
@@ -448,8 +478,9 @@ fi
 restore_ibus_emoji_hotkey
 
 # 4b. Build tools the installer added for --build (only what the manifest lists)
-if [ -f "$MANIFEST" ]; then
-    BUILD_PKGS=$(sed -n 's/^apt-build://p' "$MANIFEST" | tr '\n' ' ')
+MANIFEST_TEXT=$(cat "$MANIFEST" "$OLD_MANIFEST" 2>/dev/null || true)
+if [ -n "$MANIFEST_TEXT" ]; then
+    BUILD_PKGS=$(printf '%s\n' "$MANIFEST_TEXT" | sed -n 's/^apt-build://p' | sort -u | tr '\n' ' ')
     if [ -n "${BUILD_PKGS// /}" ]; then
         echo ""
         echo "install.sh installed these build packages (they were not on your system before):"
@@ -461,10 +492,10 @@ if [ -f "$MANIFEST" ]; then
             success "Kept the build packages. To remove them later: sudo apt remove $BUILD_PKGS"
         fi
     fi
-    if grep -qx "nvm-installed" "$MANIFEST" && [ -d "$HOME/.nvm" ]; then
+    if printf '%s\n' "$MANIFEST_TEXT" | grep -qx "nvm-installed" && [ -d "$HOME/.nvm" ]; then
         if ask_yes_no "Remove ~/.nvm (Node.js installed by install.sh)?"; then rm -rf "$HOME/.nvm"; success "Removed ~/.nvm."; else success "Kept ~/.nvm (remove later with: rm -rf ~/.nvm)"; fi
     fi
-    if grep -qx "rustup-installed" "$MANIFEST" && [ -d "$HOME/.rustup" ]; then
+    if printf '%s\n' "$MANIFEST_TEXT" | grep -qx "rustup-installed" && [ -d "$HOME/.rustup" ]; then
         if ask_yes_no "Remove ~/.rustup and ~/.cargo (Rust installed by install.sh)?"; then rm -rf "$HOME/.rustup" "$HOME/.cargo"; success "Removed ~/.rustup and ~/.cargo."; else success "Kept ~/.rustup and ~/.cargo (remove later with: rm -rf ~/.rustup ~/.cargo)"; fi
     fi
 fi
@@ -472,73 +503,107 @@ fi
 # 5. Clean Binaries, Config, and Package
 log "Cleaning configuration, packages, and binaries..."
 
-# The app can be installed as a system package (apt / dnf / pacman). Removing it deletes the app
+# The app can be installed as a system package (apt / dnf / pacman), under its current name or the
+# old one (which is also the name of the upstream project's package). Removing it deletes the app
 # itself, so it is asked first: default No, and No when there is no terminal.
-PKG_MANAGER=""; PKG_VERSION=""
-if command -v apt-get &>/dev/null && dpkg -s win11-clipboard-history >/dev/null 2>&1; then
-    PKG_MANAGER="apt"; PKG_VERSION=$(dpkg-query -W -f='${Version}' win11-clipboard-history 2>/dev/null)
-elif command -v dnf &>/dev/null && rpm -q win11-clipboard-history >/dev/null 2>&1; then
-    PKG_MANAGER="dnf"; PKG_VERSION=$(rpm -q --qf '%{VERSION}' win11-clipboard-history 2>/dev/null)
-elif command -v pacman &>/dev/null && pacman -Qi win11-clipboard-history &>/dev/null; then
-    PKG_MANAGER="pacman"; PKG_VERSION=$(pacman -Q win11-clipboard-history 2>/dev/null | awk '{print $2}')
-fi
+package_manager_of() {   # prints "<manager> <version>" for an installed package named $1, or nothing
+    if command -v apt-get &>/dev/null && dpkg -s "$1" >/dev/null 2>&1; then
+        echo "apt $(dpkg-query -W -f='${Version}' "$1" 2>/dev/null)"
+    elif command -v dnf &>/dev/null && rpm -q "$1" >/dev/null 2>&1; then
+        echo "dnf $(rpm -q --qf '%{VERSION}' "$1" 2>/dev/null)"
+    elif command -v pacman &>/dev/null && pacman -Qi "$1" &>/dev/null; then
+        echo "pacman $(pacman -Q "$1" 2>/dev/null | awk '{print $2}')"
+    fi
+}
+
+KEPT_PACKAGES=()   # names of the packages whose files are left in place
 PACKAGE_KEPT=false
-if [ -n "$PKG_MANAGER" ]; then
+for pkg in "$PKG_NAME" "$OLD_PKG_NAME"; do
+    found=$(package_manager_of "$pkg")
+    [ -n "$found" ] || continue
+    PKG_MANAGER="${found%% *}"; PKG_VERSION="${found#* }"
+    note=""; [ "$pkg" = "$OLD_PKG_NAME" ] && note=" (the name this app had before it was called $APP_DISPLAY_NAME)"
     echo ""
-    echo "The Win11Clip app is installed as a system package: win11-clipboard-history $PKG_VERSION ($PKG_MANAGER)."
-    echo "    Removing it deletes the app from /usr. Your clipboard history (~/.local/share) is not touched."
-    if ask_yes_no "Remove the package win11-clipboard-history?"; then
+    echo "The $APP_DISPLAY_NAME app is installed as a system package: $pkg $PKG_VERSION ($PKG_MANAGER)$note."
+    echo "    Removing it deletes the app from /usr. Your clipboard history and settings (~/.local/share, ~/.config) are not touched."
+    if ask_yes_no "Remove the package $pkg?"; then
         case "$PKG_MANAGER" in
-            apt)    PKG_REMOVE=(apt-get remove -y win11-clipboard-history) ;;
-            dnf)    PKG_REMOVE=(dnf remove -y win11-clipboard-history) ;;
-            pacman) PKG_REMOVE=(pacman -Rns --noconfirm win11-clipboard-history) ;;
+            apt)    PKG_REMOVE=(apt-get remove -y "$pkg") ;;
+            dnf)    PKG_REMOVE=(dnf remove -y "$pkg") ;;
+            pacman) PKG_REMOVE=(pacman -Rns --noconfirm "$pkg") ;;
         esac
         if $SUDO_CMD "${PKG_REMOVE[@]}"; then
-            success "Removed the package win11-clipboard-history $PKG_VERSION."
-            SUMMARY_REMOVED+=("package win11-clipboard-history $PKG_VERSION")
+            success "Removed the package $pkg $PKG_VERSION."
+            SUMMARY_REMOVED+=("package $pkg $PKG_VERSION")
         else
             warn "Could not remove the package. Run it yourself: sudo ${PKG_REMOVE[*]}"
-            PACKAGE_KEPT=true
-            SUMMARY_KEPT+=("package win11-clipboard-history $PKG_VERSION (removal failed)")
+            PACKAGE_KEPT=true; KEPT_PACKAGES+=("$pkg")
+            SUMMARY_KEPT+=("package $pkg $PKG_VERSION (removal failed)")
         fi
     else
-        PACKAGE_KEPT=true
-        success "Kept the package. Remove it later with: sudo ${PKG_MANAGER/apt/apt-get} remove win11-clipboard-history"
-        SUMMARY_KEPT+=("package win11-clipboard-history $PKG_VERSION (app files in /usr)")
+        PACKAGE_KEPT=true; KEPT_PACKAGES+=("$pkg")
+        success "Kept the package. Remove it later with: sudo ${PKG_MANAGER/apt/apt-get} remove $pkg"
+        SUMMARY_KEPT+=("package $pkg $PKG_VERSION (app files in /usr)")
     fi
-fi
+done
 
-# True for a file that belongs to the package we just decided to keep: those are left alone.
+# True for a file that belongs to a package we just decided to keep: those are left alone.
 owned_by_kept_package() {
     [ "$PACKAGE_KEPT" = true ] || return 1
-    case "$PKG_MANAGER" in
-        apt) dpkg -S "$1" 2>/dev/null | grep -q '^win11-clipboard-history' ;;
+    case "$(package_manager_of "$PKG_NAME")$(package_manager_of "$OLD_PKG_NAME")" in
+        apt*) dpkg -S "$1" 2>/dev/null | grep -qE "^($PKG_NAME|$OLD_PKG_NAME)[:,]" ;;
         *) case "$1" in /usr/local/*) return 1 ;; *) return 0 ;; esac ;;
     esac
 }
 
-# AppImage and user-local files
-rm -f "$HOME/.local/bin/win11-clipboard-history.AppImage"
-rm -f "$HOME/.local/bin/win11-clipboard-history"
-rm -f "$HOME/.local/share/applications/win11-clipboard-history.desktop"
+# AppImage and user-local files, under the current names and the old ones
+for name in "$APP_CMD" "$OLD_CMD"; do
+    rm -f "$HOME/.local/bin/$name.AppImage"
+    rm -f "$HOME/.local/bin/$name"
+    rm -f "$HOME/.local/share/applications/$name.desktop"
+    rm -f "$HOME/.local/share/icons/hicolor"/*/apps/"$name.png" 2>/dev/null || true
+done
+rm -f "$HOME/.local/share/applications/$APP_ID.desktop"
+rm -f "$HOME/.local/share/icons/hicolor"/*/apps/"$APP_ID.png" 2>/dev/null || true
 rm -f "$HOME/.config/autostart/win11clip-firstrun.desktop"
 rm -f "$HOME/.local/state/win11clip-installer/firstrun.sh" "$HOME/.local/state/win11clip-installer/firstrun.log" "$HOME/.local/state/win11clip-installer/firstrun.tries"
-rm -f "$HOME/.config/autostart/win11-clipboard-history.desktop"
-rm -rf "$HOME/.config/win11-clipboard-history"
+# The autostart entry of the app: the one named after the app id, and the one the old name wrote
+rm -f "$HOME/.config/autostart/$APP_ID.desktop"
+rm -f "$HOME/.config/autostart/$OLD_CMD.desktop"
+# The installer's record of what it added (read above). Only that file: the app's own data folders
+# are the user's history and settings and are never deleted here.
+rm -f "$MANIFEST" "$OLD_MANIFEST"
 
 # System binaries, desktop files, and utilities
 for target in \
-    "/usr/bin/win11-clipboard-history" \
-    "/usr/bin/win11-clipboard-history-bin" \
-    "/usr/local/bin/win11-clipboard-history" \
-    "/usr/local/bin/win11-clipboard-history-bin" \
-    "/usr/local/bin/win11-clipboard-uninstall" \
-    "/usr/share/applications/win11-clipboard-history.desktop" \
-    "/usr/local/share/applications/win11-clipboard-history.desktop" \
-    "/usr/local/share/icons/hicolor/128x128/apps/win11-clipboard-history.png" \
-    "/usr/local/share/icons/hicolor/256x256/apps/win11-clipboard-history.png" \
-    "/etc/udev/rules.d/99-win11-clipboard-input.rules" \
-    "/etc/modules-load.d/win11-clipboard.conf"; do
+    "$SYSROOT/usr/bin/$APP_CMD" \
+    "$SYSROOT/usr/bin/$APP_BIN" \
+    "$SYSROOT/usr/bin/$OLD_CMD" \
+    "$SYSROOT/usr/bin/$OLD_BIN" \
+    "$SYSROOT/usr/local/bin/$APP_CMD" \
+    "$SYSROOT/usr/local/bin/$APP_BIN" \
+    "$SYSROOT/usr/local/bin/$OLD_CMD" \
+    "$SYSROOT/usr/local/bin/$OLD_BIN" \
+    "$SYSROOT/usr/local/bin/$UNINSTALL_CMD" \
+    "$SYSROOT/usr/local/bin/$OLD_UNINSTALL_CMD" \
+    "$SYSROOT/usr/share/applications/$APP_ID.desktop" \
+    "$SYSROOT/usr/share/applications/$APP_CMD.desktop" \
+    "$SYSROOT/usr/share/applications/$OLD_CMD.desktop" \
+    "$SYSROOT/usr/local/share/applications/$APP_ID.desktop" \
+    "$SYSROOT/usr/local/share/applications/$OLD_CMD.desktop" \
+    "$SYSROOT/usr/share/metainfo/$APP_ID.metainfo.xml" \
+    "$SYSROOT/usr/share/icons/hicolor/128x128/apps/$APP_ID.png" \
+    "$SYSROOT/usr/share/icons/hicolor/256x256/apps/$APP_ID.png" \
+    "$SYSROOT/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg" \
+    "$SYSROOT/usr/local/share/icons/hicolor/128x128/apps/$APP_ID.png" \
+    "$SYSROOT/usr/local/share/icons/hicolor/256x256/apps/$APP_ID.png" \
+    "$SYSROOT/usr/share/icons/hicolor/128x128/apps/$OLD_CMD.png" \
+    "$SYSROOT/usr/share/icons/hicolor/256x256/apps/$OLD_CMD.png" \
+    "$SYSROOT/usr/share/icons/hicolor/scalable/apps/$OLD_CMD.svg" \
+    "$SYSROOT/usr/local/share/icons/hicolor/128x128/apps/$OLD_CMD.png" \
+    "$SYSROOT/usr/local/share/icons/hicolor/256x256/apps/$OLD_CMD.png" \
+    "$SYSROOT/etc/udev/rules.d/99-win11-clipboard-input.rules" \
+    "$SYSROOT/etc/modules-load.d/win11-clipboard.conf"; do
     if [ -e "$target" ] || [ -L "$target" ]; then
         if owned_by_kept_package "$target"; then continue; fi
         $SUDO_CMD rm -f "$target"
@@ -548,13 +613,28 @@ for target in \
     fi
 done
 
-# Where `make install` (the --build path) puts the app binary
-$SUDO_CMD rm -rf "/usr/local/lib/win11-clipboard-history"
+# Where `make install` (the --build path) puts the app binary, under both names
+$SUDO_CMD rm -rf "$SYSROOT/usr/local/lib/$APP_CMD" "$SYSROOT/usr/local/lib/$OLD_CMD"
 
 success "Configuration and binaries removed."
 if [ -d "$BACKUP_DIR" ]; then
     echo "    Backups of what install.sh removed are kept in $BACKUP_DIR"
     echo "    (delete them when you no longer need them: rm -rf ~/.local/state/win11clip-installer)"
+fi
+
+# The user's data is never deleted here. Say exactly which folders exist and were left.
+DATA_KEPT=()
+for dir in "$HOME/.config/win11clip" "$HOME/.local/share/win11clip" "$HOME/.cache/win11clip" \
+           "$HOME/.config/win11-clipboard-history" "$HOME/.local/share/win11-clipboard-history" "$HOME/.cache/win11-clipboard-history"; do
+    [ -e "$dir" ] && DATA_KEPT+=("$dir")
+done
+echo ""
+if [ ${#DATA_KEPT[@]} -gt 0 ]; then
+    echo "Your clipboard history, settings and caches were NOT deleted. These folders are still there:"
+    printf '  - %s\n' "${DATA_KEPT[@]}"
+    echo "    Delete them yourself if you want them gone; keep them if you will reinstall $APP_DISPLAY_NAME."
+else
+    echo "No clipboard history, settings or cache folders of $APP_DISPLAY_NAME were found; nothing of yours was deleted."
 fi
 
 # What was removed and what was left alone
@@ -573,6 +653,6 @@ echo -e "${BLUE}│${NC}  ${YELLOW}! Partly uninstalled.${NC}                   
 echo -e "${BLUE}│${NC}  The app package may still be installed (kept or failed).    ${BLUE}│${NC}"
 else
 echo -e "${BLUE}│${NC}  ${GREEN}✓ Uninstallation Complete!${NC}                                  ${BLUE}│${NC}"
-echo -e "${BLUE}│${NC}  Win11 Clipboard History has been removed.                   ${BLUE}│${NC}"
+echo -e "${BLUE}│${NC}  $APP_DISPLAY_NAME has been removed.                                    ${BLUE}│${NC}"
 fi
 echo -e "${BLUE}└──────────────────────────────────────────────────────────────┘${NC}\n"

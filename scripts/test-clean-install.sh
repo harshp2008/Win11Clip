@@ -5,10 +5,10 @@ set -e
 cd "$(dirname "$0")/.."
 
 echo "Building test Docker image..."
-docker build -t win11-clipboard-history-test -f Dockerfile.test .
+docker build -t win11clip-test -f Dockerfile.test .
 
 echo "Running test container..."
 # Run the container and grab the output
-docker run --rm win11-clipboard-history-test
+docker run --rm win11clip-test
 
 echo "Test completed successfully!"

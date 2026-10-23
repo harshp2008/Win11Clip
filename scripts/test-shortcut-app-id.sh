@@ -4,8 +4,9 @@
 #
 # Bug this covers: the popup's window class changed, spawn-at stopped recognising the window and the
 # popup was no longer placed at the cursor. Every shortcut now passes the app's class explicitly
-# (`-c io.github.harshp2008.win11clip`), and shortcuts written by earlier releases (no -c, or the
-# upstream class) must be rewritten in place, never duplicated, and still be removed by uninstall.sh.
+# (`-c io.github.harshp2008.win11clip`) and runs the command `win11clip`. Shortcuts written by earlier
+# releases (the old command win11-clipboard-history with no -c, with the upstream class, or with the
+# app's own class) must be rewritten in place, never duplicated, and still be removed by uninstall.sh.
 #
 # Runs the REAL configure_gnome_shortcuts() extracted from scripts/install.sh, and the REAL python
 # block of scripts/uninstall.sh, against a fake `gsettings` in a throwaway /tmp sandbox. Nothing here
@@ -152,13 +153,15 @@ seed_entry() { # path-leaf name command binding
 
 seed_old_forms() {
     rm -rf "$FAKE_GSETTINGS_STATE"; mkdir -p "$FAKE_GSETTINGS_STATE"
-    # v0.7.5: bare spawn-at, no -c
+    # v0.7.5: bare spawn-at, no -c, the old command
     seed_entry custom0 'Clipboard History' 'spawn-at spawn --anchor cursor -o -15 -15 -m 10 win11-clipboard-history --clipboard' '<Super>v'
     # unreleased 8fb0073 era: the upstream class passed with -c
     seed_entry custom1 'Emoji Picker' '/home/u/.local/bin/spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c dev.gustavosett.clipboard-history win11-clipboard-history --emoji' '<Super>period'
+    # the build before the rename: the app's own class but still the old command
+    seed_entry custom3 'Clipboard History (Alt)' "/home/u/.local/bin/spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c $APP_ID win11-clipboard-history --clipboard" '<Ctrl><Alt>v'
     # someone else's shortcut, which must never be touched
     seed_entry custom2 'Terminal' 'gnome-terminal' '<Super>t'
-    gsettings set "$SCHEMA" custom-keybindings "['$PATH_PREFIX/custom0/', '$PATH_PREFIX/custom1/', '$PATH_PREFIX/custom2/']"
+    gsettings set "$SCHEMA" custom-keybindings "['$PATH_PREFIX/custom0/', '$PATH_PREFIX/custom1/', '$PATH_PREFIX/custom3/', '$PATH_PREFIX/custom2/']"
 }
 
 # --- load the real functions ---------------------------------------------------------------------
@@ -179,7 +182,10 @@ for fn in run_user_gsettings spawn_at_shortcut_exe configure_gnome_shortcuts; do
     fi
     eval "$body"
 done
-APP_ID=$(sed -n 's/^APP_ID="\(.*\)"$/\1/p' "$INSTALL_SH" | head -n1)
+# The name variables the extracted functions use, read from install.sh itself.
+for v in APP_ID APP_DISPLAY_NAME APP_CMD APP_BIN PKG_NAME UNINSTALL_CMD OLD_CMD OLD_BIN OLD_PKG_NAME OLD_UNINSTALL_CMD; do
+    eval "$v=\$(sed -n 's/^$v=\"\\(.*\\)\"\$/\\1/p' \"\$INSTALL_SH\" | head -n1)"
+done
 SUDO_USER=""
 printf '#!/bin/sh\nexit 0\n' > "$SANDBOX/spawn-at"
 chmod +x "$SANDBOX/spawn-at"
@@ -194,21 +200,25 @@ RS_ID=$(grep -o '"io\.github\.[^"]*"' "$APP_ID_RS" | head -n1 | tr -d '"')
 check_eq "install.sh APP_ID matches app_id.rs" "$APP_ID" "$RS_ID"
 check_eq "APP_ID is the new identity" "$APP_ID" "io.github.harshp2008.win11clip"
 
-printf '\n-- Test 2: old-form shortcuts are rewritten in place with -c, not duplicated\n'
+printf '\n-- Test 2: old-form shortcuts are rewritten in place for win11clip with -c, not duplicated\n'
 seed_old_forms
 configure_gnome_shortcuts
-WANT_FLAG="-c $APP_ID win11-clipboard-history"
-check_contains "old bare Super+V command gets -c" "$(entry_cmd custom0)" "spawn --anchor cursor -o -15 -15 -m 10 $WANT_FLAG --clipboard"
-check_contains "old-class emoji command is rewritten to the new class" "$(entry_cmd custom1)" "-m 10 $WANT_FLAG --emoji"
+WANT_FLAG="-c $APP_ID win11clip"
+check_contains "old bare Super+V command gets -c and the new command" "$(entry_cmd custom0)" "spawn --anchor cursor -o -15 -15 -m 10 $WANT_FLAG --clipboard"
+check_not_contains "the old command is gone from Super+V" "$(entry_cmd custom0)" "win11-clipboard-history"
+check_contains "old-class emoji command is rewritten to the new class and command" "$(entry_cmd custom1)" "-m 10 $WANT_FLAG --emoji"
 check_not_contains "the upstream class is gone from the emoji command" "$(entry_cmd custom1)" "dev.gustavosett"
+check_contains "own-class old-command Alt shortcut gets the new command" "$(entry_cmd custom3)" "-m 10 $WANT_FLAG --clipboard"
+check_not_contains "the old command is gone from the Alt shortcut" "$(entry_cmd custom3)" "win11-clipboard-history"
+check_eq "Super+V is shown as Win11Clip" "$(gs_get "$BSCHEMA:$PATH_PREFIX/custom0/" name)" "'Win11Clip'"
+check_eq "Super+. is shown as Win11Clip Emoji Picker" "$(gs_get "$BSCHEMA:$PATH_PREFIX/custom1/" name)" "'Win11Clip Emoji Picker'"
+check_eq "Ctrl+Alt+V is shown as Win11Clip (Alt)" "$(gs_get "$BSCHEMA:$PATH_PREFIX/custom3/" name)" "'Win11Clip (Alt)'"
 check_eq "the user's own shortcut is untouched" "$(entry_cmd custom2)" "'gnome-terminal'"
 check_eq "the user's own binding is untouched" "$(entry_bind custom2)" "'<Super>t'"
 check_eq "Super+V binding is kept" "$(entry_bind custom0)" "'<Super>v'"
 check_eq "Super+. binding is kept" "$(entry_bind custom1)" "'<Super>period'"
 check_contains "full spawn-at path is used" "$(entry_cmd custom0)" "$SPAWN_AT_USER_BIN spawn"
-ALT_CMD=$(entry_cmd win11-clipboard-history-alt)
-check_contains "the missing Alt shortcut is created with -c" "$ALT_CMD" "-m 10 $WANT_FLAG --clipboard"
-check_eq "3 old/new Win11Clip entries + the user's = 4, none duplicated" "$(list_count)" "4"
+check_eq "3 Win11Clip entries + the user's = 4, none duplicated" "$(list_count)" "4"
 
 printf '\n-- Test 3: running it again changes nothing (idempotent)\n'
 BEFORE_LIST=$(list_value); BEFORE_CB=$(entry_cmd custom0); BEFORE_EM=$(entry_cmd custom1)
@@ -219,13 +229,21 @@ check_eq "emoji command is unchanged" "$(entry_cmd custom1)" "$BEFORE_EM"
 
 printf '\n-- Test 4: every command written carries -c <app id>\n'
 ALL_OK=yes
-for leaf in custom0 custom1 win11-clipboard-history-alt; do
+for leaf in custom0 custom1 custom3; do
     case "$(entry_cmd "$leaf")" in
         *"-c $APP_ID "*) ;;
         *) ALL_OK=no ;;
     esac
 done
 check_eq "all three Win11Clip commands contain -c $APP_ID" "$ALL_OK" "yes"
+
+printf '\n-- Test 4b: a fresh install writes the new command at the three canonical keys\n'
+rm -rf "$FAKE_GSETTINGS_STATE"; mkdir -p "$FAKE_GSETTINGS_STATE"
+configure_gnome_shortcuts
+for leaf in win11-clipboard-history win11-clipboard-history-alt win11-clipboard-history-emoji; do
+    check_contains "fresh $leaf runs win11clip with the class" "$(entry_cmd "$leaf")" "-m 10 -c $APP_ID win11clip --"
+done
+check_eq "a fresh install makes exactly 3 entries" "$(list_count)" "3"
 
 printf '\n-- Test 5: install.sh writes the new StartupWMClass into the AppImage desktop entry\n'
 check_contains "AppImage .desktop heredoc uses \$APP_ID" "$(grep -n 'StartupWMClass=' "$INSTALL_SH")" 'StartupWMClass=$APP_ID'
@@ -238,15 +256,17 @@ if [ -z "$UNINSTALL_PY" ]; then
 else
     # one old-form entry that only the command tells apart (custom path, generic name) next to the others
     seed_old_forms
-    seed_entry custom3 'Something' "spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c $APP_ID win11-clipboard-history --clipboard" '<Ctrl><Alt>v'
-    seed_entry custom4 'Else' 'spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c dev.gustavosett.clipboard-history win11-clipboard-history --emoji' '<Super>e'
-    gsettings set "$SCHEMA" custom-keybindings "['$PATH_PREFIX/custom0/', '$PATH_PREFIX/custom1/', '$PATH_PREFIX/custom2/', '$PATH_PREFIX/custom3/', '$PATH_PREFIX/custom4/']"
+    seed_entry custom4 'Something' "spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c $APP_ID win11clip --clipboard" '<Ctrl><Alt>v'
+    seed_entry custom5 'Else' 'spawn-at spawn --anchor cursor -o -15 -15 -m 10 -c dev.gustavosett.clipboard-history win11-clipboard-history --emoji' '<Super>e'
+    gsettings set "$SCHEMA" custom-keybindings "['$PATH_PREFIX/custom0/', '$PATH_PREFIX/custom1/', '$PATH_PREFIX/custom2/', '$PATH_PREFIX/custom3/', '$PATH_PREFIX/custom4/', '$PATH_PREFIX/custom5/']"
     python3 -c "$UNINSTALL_PY" >/dev/null
     REMAINING=$(list_value)
     check_eq "only the user's own shortcut is left in the list" "$REMAINING" "['$PATH_PREFIX/custom2/']"
     check_eq "the user's shortcut keeps its command" "$(entry_cmd custom2)" "'gnome-terminal'"
     check_eq "old-form command entry was reset" "$(entry_cmd custom0)" "''"
-    check_eq "new-form command entry was reset" "$(entry_cmd custom3)" "''"
+    check_eq "own-class old-command entry was reset" "$(entry_cmd custom3)" "''"
+    check_eq "new-form command entry was reset" "$(entry_cmd custom4)" "''"
+    check_eq "upstream-class entry was reset" "$(entry_cmd custom5)" "''"
 fi
 
 # --- results -------------------------------------------------------------------------------------

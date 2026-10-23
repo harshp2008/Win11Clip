@@ -1,5 +1,5 @@
 #!/bin/bash
-# install.sh - Smart installer for Win11 Clipboard History
+# install.sh - Smart installer for Win11Clip
 # Usage: curl -fsSL https://raw.githubusercontent.com/harshp2008/Win11Clip/master/scripts/install.sh | bash
 
 set -e
@@ -35,17 +35,20 @@ MIN_NODE_MAJOR=20
 MIN_RUST_VERSION="1.85"
 NVM_VERSION="v0.40.3"
 
+# Where this installer keeps its own records. Never the app's data folders: those hold the user's
+# history and settings, and uninstall.sh leaves them alone.
+STATE_DIR="$HOME/.local/state/win11clip-installer"
 # What this installer added on top of the user's system, so uninstall.sh only removes ours.
-MANIFEST_DIR="$HOME/.config/win11-clipboard-history"
+MANIFEST_DIR="$STATE_DIR"
 MANIFEST="$MANIFEST_DIR/installer-manifest"
+# Installers from before the rename kept that record in the app's config folder.
+OLD_MANIFEST="$HOME/.config/win11-clipboard-history/installer-manifest"
 # Copies of anything this installer removes with your consent, so uninstall.sh can restore or report it.
-# Not under ~/.config/win11-clipboard-history: uninstall.sh wipes that folder.
-BACKUP_DIR="$HOME/.local/state/win11clip-installer/backup"
+BACKUP_DIR="$STATE_DIR/backup"
 # The one-time first-login check (see setup_post_login_enable) and its log live here too.
-FIRSTRUN_SCRIPT="$HOME/.local/state/win11clip-installer/firstrun.sh"
+FIRSTRUN_SCRIPT="$STATE_DIR/firstrun.sh"
 # Where the original IBus emoji hotkey is saved when remove_ibus_emoji_hotkey has to change it,
 # so uninstall.sh can put the user's own setting back.
-STATE_DIR="$HOME/.local/state/win11clip-installer"
 IBUS_EMOJI_SCHEMA="org.freedesktop.ibus.panel.emoji"
 IBUS_EMOJI_HOTKEY_SAVED="$STATE_DIR/ibus-emoji-hotkey.orig"
 
@@ -53,6 +56,24 @@ IBUS_EMOJI_HOTKEY_SAVED="$STATE_DIR/ibus-emoji-hotkey.orig"
 # the repo that holds it is src-tauri/src/app_id.rs; a Rust test fails when this copy drifts.
 # Every shortcut passes it to spawn-at with -c, because spawn-at finds the popup window by this class.
 APP_ID="io.github.harshp2008.win11clip"
+
+# The app's names (the Rust copy is src-tauri/src/app_id.rs; a test fails when they drift apart).
+APP_DISPLAY_NAME="Win11Clip"
+APP_CMD="win11clip"
+APP_BIN="win11clip-bin"
+PKG_NAME="win11clip"
+UNINSTALL_CMD="win11clip-uninstall"
+# What the app was called before it was Win11Clip (the upstream project's names). Nothing installs
+# these any more; they are only recognised, replaced or removed. The old package name is also the
+# name of the upstream project's package, which is why the new package has its own name.
+OLD_CMD="win11-clipboard-history"
+OLD_BIN="win11-clipboard-history-bin"
+OLD_PKG_NAME="win11-clipboard-history"
+OLD_UNINSTALL_CMD="win11-clipboard-uninstall"
+
+# Prefix of the system paths remove_old_name_files looks at. Empty on a real system; the tests point
+# it at a throwaway folder so they can run that function without touching the real system.
+SYSROOT="${WIN11CLIP_SYSROOT:-}"
 
 # Leftovers of older installers that added gustavosett's upstream package repository.
 LEGACY_APT_LIST="/etc/apt/sources.list.d/gustavosett-clipboard-manager.list"
@@ -136,48 +157,131 @@ remove_legacy_cloudsmith_source() {
     success "Removed the upstream package source (backup: $BACKUP_DIR/apt-source)."
 }
 
-# --build installs under /usr/local, but the launcher prefers a copy in /usr/bin, so an
-# already-installed apt package (for example upstream's) would keep running instead of the
-# new build. Ask once, before the long build, so a "no" costs nothing. Sets REMOVE_PACKAGE.
+# Carry the record of an earlier installer over. It is copied, not moved: the old file is removed by
+# uninstall.sh, together with the rest of what that install left.
+import_old_manifest() {
+    [ -f "$OLD_MANIFEST" ] || return 0
+    [ -f "$MANIFEST" ] && return 0
+    mkdir -p "$MANIFEST_DIR" 2>/dev/null && cp -p "$OLD_MANIFEST" "$MANIFEST" 2>/dev/null || true
+}
+
+# Where an installed apt package named $OLD_PKG_NAME comes from. Prints one of:
+#   none      not installed (or no dpkg)
+#   own       its Maintainer or Homepage names harshp2008: a Win11Clip build made after the rename work
+#   upstream  apt knows it from gustavosett's package repository
+#   unknown   anything else. Win11Clip releases up to 0.7.5 were packaged with the maintainer
+#             "gustavosett" and no homepage, so their package cannot be told from upstream's by its
+#             metadata; it is shown to the user with its maintainer instead of guessed at.
+old_package_origin() {
+    if ! { command -v dpkg >/dev/null 2>&1 && dpkg -s "$OLD_PKG_NAME" >/dev/null 2>&1; }; then
+        echo none
+        return 0
+    fi
+    local maint homepage policy
+    maint=$(dpkg-query -W -f='${Maintainer}' "$OLD_PKG_NAME" 2>/dev/null || true)
+    homepage=$(dpkg-query -W -f='${Homepage}' "$OLD_PKG_NAME" 2>/dev/null || true)
+    case "$maint $homepage" in
+        *harshp2008*) echo own; return 0 ;;
+    esac
+    policy=$(apt-cache policy "$OLD_PKG_NAME" 2>/dev/null || true)
+    case "$policy" in
+        *cloudsmith*|*gustavosett*) echo upstream; return 0 ;;
+    esac
+    echo unknown
+}
+
+# The package is now called $PKG_NAME and replaces/conflicts with the old name, so an installed
+# $OLD_PKG_NAME has to go before the new package (or a source build, whose launcher is shadowed by a
+# packaged copy in /usr/bin) can take over. Ask once, before the long download or build, so a "no"
+# costs nothing. Sets REMOVE_PACKAGE. Nothing is removed without an explicit yes; the package's files
+# are saved first; and the user's clipboard history and settings are never touched.
 REMOVE_PACKAGE=false
 confirm_packaged_copy_removal() {
-    command -v dpkg >/dev/null 2>&1 && dpkg -s win11-clipboard-history >/dev/null 2>&1 || return 0
-    local ver maint
-    ver=$(dpkg-query -W -f='${Version}' win11-clipboard-history 2>/dev/null)
-    maint=$(dpkg-query -W -f='${Maintainer}' win11-clipboard-history 2>/dev/null)
+    local origin ver maint
+    origin=$(old_package_origin)
+    [ "$origin" = none ] && return 0
+    ver=$(dpkg-query -W -f='${Version}' "$OLD_PKG_NAME" 2>/dev/null)
+    maint=$(dpkg-query -W -f='${Maintainer}' "$OLD_PKG_NAME" 2>/dev/null)
 
     echo ""
-    warn "An apt package named win11-clipboard-history is already installed: version $ver (maintainer: $maint)."
-    echo "    A source build installs to /usr/local, but the launcher prefers the copy in /usr/bin,"
-    echo "    so that package would keep running instead of the build you are about to make."
-    echo "    To fix that, after the build succeeds this installer would run:"
-    echo "        sudo apt-get remove win11-clipboard-history"
-    echo "    Your clipboard history and settings (~/.config) are not touched. Before removing it, the"
+    case "$origin" in
+        own)
+            warn "Your earlier $APP_DISPLAY_NAME build is installed under its old package name: $OLD_PKG_NAME $ver (maintainer: $maint)."
+            echo "    $APP_DISPLAY_NAME is now the package $PKG_NAME, which replaces that name."
+            ;;
+        upstream)
+            warn "The upstream project's package $OLD_PKG_NAME $ver is installed (maintainer: $maint)."
+            echo "    It is not $APP_DISPLAY_NAME. The package $PKG_NAME conflicts with that name, so it has to be removed first,"
+            echo "    and it lacks this project's fixes."
+            ;;
+        *)
+            warn "An apt package named $OLD_PKG_NAME is already installed: version $ver (maintainer: $maint)."
+            echo "    It is either the upstream project's build or an earlier $APP_DISPLAY_NAME release: both were packaged with the"
+            echo "    same maintainer and no homepage, so they cannot be told apart. The package $PKG_NAME conflicts with that"
+            echo "    name, so it has to be removed first."
+            ;;
+    esac
+    echo "    A source build installs to /usr/local, but the launcher prefers the copy in /usr/bin, so a packaged"
+    echo "    copy would also keep running instead of the build you are about to make."
+    echo "    To fix that, once the new version is ready this installer would run:"
+    echo "        sudo apt-get remove $OLD_PKG_NAME"
+    echo "    Your clipboard history and settings (~/.config, ~/.local/share) are not touched. Before removing it, the"
     echo "    package's files are saved under $BACKUP_DIR/package and uninstall.sh reports what was removed."
-    if ask_yes_no "Remove the installed package once the new build is ready?"; then
+    if ask_yes_no "Remove the installed package once the new version is ready?"; then
         REMOVE_PACKAGE=true
     else
-        error "Cancelled, nothing was changed. Either remove the package yourself (sudo apt remove win11-clipboard-history) and re-run, or re-run and answer y."
+        error "Cancelled, nothing was changed. Either remove the package yourself (sudo apt remove $OLD_PKG_NAME) and re-run, or re-run and answer y."
     fi
 }
 
-# Save the installed package's files, record it in the manifest, then remove it.
+# Save the installed old-name package's files, record it in the manifest, then remove it.
 remove_packaged_copy() {
     [ "$REMOVE_PACKAGE" = true ] || return 0
-    dpkg -s win11-clipboard-history >/dev/null 2>&1 || return 0
+    dpkg -s "$OLD_PKG_NAME" >/dev/null 2>&1 || return 0
     local ver files=() p
-    ver=$(dpkg-query -W -f='${Version}' win11-clipboard-history)
+    ver=$(dpkg-query -W -f='${Version}' "$OLD_PKG_NAME")
     while IFS= read -r p; do
         { [ -f "$p" ] || [ -L "$p" ]; } && files+=("${p#/}")
-    done < <(dpkg -L win11-clipboard-history)
+    done < <(dpkg -L "$OLD_PKG_NAME")
 
     mkdir -p "$BACKUP_DIR/package"
-    tar -C / -czf "$BACKUP_DIR/package/win11-clipboard-history_${ver}_files.tar.gz" "${files[@]}" \
+    tar -C / -czf "$BACKUP_DIR/package/${OLD_PKG_NAME}_${ver}_files.tar.gz" "${files[@]}" \
         || error "Could not save a backup of the installed package to $BACKUP_DIR/package, so it was not removed."
-    sudo apt-get remove -y win11-clipboard-history \
-        || error "Could not remove the installed win11-clipboard-history package. Run: sudo apt remove win11-clipboard-history   then re-run."
-    record_install "removed-package:win11-clipboard-history=$ver"
-    success "Removed the apt package win11-clipboard-history $ver (files saved in $BACKUP_DIR/package)."
+    sudo apt-get remove -y "$OLD_PKG_NAME" \
+        || error "Could not remove the installed $OLD_PKG_NAME package. Run: sudo apt remove $OLD_PKG_NAME   then re-run."
+    record_install "removed-package:$OLD_PKG_NAME=$ver"
+    success "Removed the apt package $OLD_PKG_NAME $ver (files saved in $BACKUP_DIR/package)."
+}
+
+# True when an installed package owns the file $1 (so removing that package handles it).
+owned_by_a_package() {
+    command -v dpkg >/dev/null 2>&1 && dpkg -S "$1" >/dev/null 2>&1
+}
+
+# Remove the files of the old name that no package owns: the launcher and library folder a source
+# build put under /usr/local, the menu entry and icons next to them, and a /usr/bin symlink
+# `make install` made. They would otherwise leave a second "Clipboard History" in the app menu and a
+# dead command behind. Files of an installed package are left to the package; user data is never touched.
+remove_old_name_files() {
+    local removed=() f
+    local candidates=(
+        "$SYSROOT/usr/local/bin/$OLD_CMD" "$SYSROOT/usr/local/bin/$OLD_BIN"
+        "$SYSROOT/usr/bin/$OLD_CMD" "$SYSROOT/usr/bin/$OLD_BIN"
+        "$SYSROOT/usr/local/share/applications/$OLD_CMD.desktop" "$SYSROOT/usr/share/applications/$OLD_CMD.desktop"
+        "$SYSROOT/usr/local/share/icons/hicolor/128x128/apps/$OLD_CMD.png" "$SYSROOT/usr/local/share/icons/hicolor/256x256/apps/$OLD_CMD.png"
+        "$SYSROOT/usr/share/icons/hicolor/128x128/apps/$OLD_CMD.png" "$SYSROOT/usr/share/icons/hicolor/256x256/apps/$OLD_CMD.png"
+    )
+    for f in "${candidates[@]}"; do
+        { [ -e "$f" ] || [ -L "$f" ]; } || continue
+        owned_by_a_package "$f" && continue
+        sudo rm -f "$f" && removed+=("$f")
+    done
+    if [ -d "$SYSROOT/usr/local/lib/$OLD_CMD" ] && ! owned_by_a_package "$SYSROOT/usr/local/lib/$OLD_CMD/$OLD_BIN"; then
+        sudo rm -rf "$SYSROOT/usr/local/lib/$OLD_CMD" && removed+=("$SYSROOT/usr/local/lib/$OLD_CMD")
+    fi
+    [ ${#removed[@]} -eq 0 ] && return 0
+    command -v update-desktop-database >/dev/null 2>&1 && { sudo update-desktop-database "$SYSROOT/usr/local/share/applications" 2>/dev/null || true; }
+    success "Removed the files of the old name ($OLD_CMD): ${removed[*]}"
 }
 
 # --- GitHub release lookup (this repository only) --------------------------------------
@@ -280,18 +384,20 @@ ensure_rust() {
     success "Rust $(rustc --version | awk '{print $2}') ready."
 }
 
-# Cleanup previous AppImage installation (prevents conflicts with package manager installs)
 # Prints the pids of running processes whose executable is exactly one of the names given. `pkill -x`
-# cannot do this for our names: the kernel keeps 15 characters of a process name and procps refuses
-# longer patterns, so it matches nothing. So take the processes named "win11-clipboard" (the first
-# 15 characters) and compare the executable's real name.
+# cannot do this for the old names: the kernel keeps 15 characters of a process name and procps refuses
+# longer patterns, so it matches nothing. So take the processes whose name is the first 15 characters
+# of a name we know (the old binary, the old and the new AppImage, the new binary and launcher) and
+# compare the executable's real name.
 app_pids() {
-    local pid exe name want
-    for pid in $(pgrep -x win11-clipboard 2>/dev/null || true); do
-        exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || continue
-        exe="${exe% (deleted)}"; name="${exe##*/}"
-        for want in "$@"; do
-            [ "$name" = "$want" ] && echo "$pid"
+    local pid exe name want comm
+    for comm in win11-clipboard win11clip-bin win11clip.AppIm win11clip; do
+        for pid in $(pgrep -x "$comm" 2>/dev/null || true); do
+            exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || continue
+            exe="${exe% (deleted)}"; name="${exe##*/}"
+            for want in "$@"; do
+                [ "$name" = "$want" ] && echo "$pid"
+            done
         done
     done
     return 0
@@ -305,29 +411,37 @@ stop_app_by_name() {
     [ -z "$pids" ] || kill $pids 2>/dev/null || true
 }
 
+# Cleanup previous AppImage installation (prevents conflicts with package manager installs), under
+# the name it has now and under the old one.
 cleanup_appimage_installation() {
-    local has_appimage=false
-    
+    local has_appimage=false name
+    local names=("$APP_CMD" "$OLD_CMD")
+
     # Check for AppImage installation artifacts
-    if [ -f "$HOME/.local/bin/win11-clipboard-history.AppImage" ] || \
-       [ -f "$HOME/.local/bin/win11-clipboard-history" ] || \
-       [ -f "$HOME/.local/share/applications/win11-clipboard-history.desktop" ]; then
-        has_appimage=true
-    fi
+    for name in "${names[@]}"; do
+        if [ -f "$HOME/.local/bin/$name.AppImage" ] || \
+           [ -f "$HOME/.local/bin/$name" ] || \
+           [ -f "$HOME/.local/share/applications/$name.desktop" ]; then
+            has_appimage=true
+        fi
+    done
+    [ -f "$HOME/.local/share/applications/$APP_ID.desktop" ] && has_appimage=true
     
     if [ "$has_appimage" = true ]; then
         log "Detected previous AppImage installation. Cleaning up..."
         
         # Kill any running AppImage instances
-        killall -q win11-clipboard-history.AppImage 2>/dev/null || stop_app_by_name win11-clipboard-history.AppImage
+        for name in "${names[@]}"; do
+            killall -q "$name.AppImage" 2>/dev/null || stop_app_by_name "$name.AppImage"
+        done
 
         # Wait for processes to terminate, with a timeout
         timeout=5
         interval=1
         elapsed=0
-        while pgrep -f "win11-clipboard-history.AppImage" >/dev/null 2>&1; do
+        while pgrep -f "$APP_CMD.AppImage|$OLD_CMD.AppImage" >/dev/null 2>&1; do
             if [ "$elapsed" -ge "$timeout" ]; then
-                warn "Timed out waiting for Win11 Clipboard History AppImage processes to terminate."
+                warn "Timed out waiting for $APP_DISPLAY_NAME AppImage processes to terminate."
                 break
             fi
             sleep "$interval"
@@ -335,10 +449,14 @@ cleanup_appimage_installation() {
         done
         
         # Remove AppImage files
-        rm -f "$HOME/.local/bin/win11-clipboard-history.AppImage" 2>/dev/null || true
-        rm -f "$HOME/.local/bin/win11-clipboard-history" 2>/dev/null || true
-        rm -f "$HOME/.local/share/applications/win11-clipboard-history.desktop" 2>/dev/null || true
-        rm -f "$HOME/.local/share/icons/hicolor"/*/apps/win11-clipboard-history.png 2>/dev/null || true
+        for name in "${names[@]}"; do
+            rm -f "$HOME/.local/bin/$name.AppImage" 2>/dev/null || true
+            rm -f "$HOME/.local/bin/$name" 2>/dev/null || true
+            rm -f "$HOME/.local/share/applications/$name.desktop" 2>/dev/null || true
+            rm -f "$HOME/.local/share/icons/hicolor"/*/apps/"$name.png" 2>/dev/null || true
+        done
+        rm -f "$HOME/.local/share/applications/$APP_ID.desktop" 2>/dev/null || true
+        rm -f "$HOME/.local/share/icons/hicolor"/*/apps/"$APP_ID.png" 2>/dev/null || true
         
         # Update desktop database if available
         if command -v update-desktop-database &>/dev/null; then
@@ -349,7 +467,6 @@ cleanup_appimage_installation() {
     fi
 }
 
-# Detect the distribution
 detect_distro() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
@@ -462,6 +579,9 @@ install_deb() {
     deb_url=$(release_asset_url deb)
     local file="${deb_url##*/}"
 
+    # An installed package of the old name is replaced by this one: ask now, before the download.
+    confirm_packaged_copy_removal
+
     # Runtime tools the .deb's own Depends line does not cover (gdbus/gsettings, notify-send).
     local extra=() pkg
     for pkg in libglib2.0-bin libnotify-bin; do
@@ -480,8 +600,10 @@ install_deb() {
     remove_legacy_cloudsmith_source
 
     explain_sudo
+    # The old-name package, if the user agreed to its removal (its files are saved first).
+    remove_packaged_copy
     log "Installing $file and its runtime dependencies with apt..."
-    # --reinstall/--allow-downgrades: an older upstream build may already own this package name.
+    # --reinstall/--allow-downgrades: an older build of the same package name may be installed.
     sudo apt-get update -qq || warn "apt-get update failed; continuing with the package lists apt already has."
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall --allow-downgrades "$TEMP_DIR/$file" "${extra[@]}" \
         || error "apt could not install $file. Read the apt error above; fix it (often 'sudo apt --fix-broken install') and re-run."
@@ -507,7 +629,7 @@ install_rpm() {
     if [ -n "$FILE_URL" ]; then
         FILE=$(basename "$FILE_URL")
     else
-        FILE="win11-clipboard-history-${CLEAN_VERSION}-1.${RPM_ARCH}.rpm"
+        FILE="${PKG_NAME}-${CLEAN_VERSION}-1.${RPM_ARCH}.rpm"
         FILE_URL="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$RELEASE_TAG/$FILE"
     fi
     
@@ -544,7 +666,7 @@ install_rpm_suse() {
     if [ -n "$FILE_URL" ]; then
         FILE=$(basename "$FILE_URL")
     else
-        FILE="win11-clipboard-history-${CLEAN_VERSION}-1.${RPM_ARCH}.rpm"
+        FILE="${PKG_NAME}-${CLEAN_VERSION}-1.${RPM_ARCH}.rpm"
         FILE_URL="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$RELEASE_TAG/$FILE"
     fi
     
@@ -565,7 +687,7 @@ install_rpm_suse() {
 
 # Arch is not supported yet. The AUR package win11-clipboard-history-bin is upstream's
 # (gustavosett's build, without this project's fixes), not this project's, so it is never installed
-# from here; this project publishes no AUR package of its own.
+# from here. aur/PKGBUILD packages this project's release as win11clip, but it is not published to the AUR.
 arch_not_supported() {
     echo ""
     warn "Arch Linux (pacman) is not supported by this installer yet, so nothing was installed."
@@ -611,18 +733,18 @@ install_appimage() {
     
     # Download AppImage
     log "Downloading AppImage..."
-    curl -fsSL -o "$HOME/.local/bin/win11-clipboard-history.AppImage" "$LATEST_URL"
-    chmod +x "$HOME/.local/bin/win11-clipboard-history.AppImage"
+    curl -fsSL -o "$HOME/.local/bin/$APP_CMD.AppImage" "$LATEST_URL"
+    chmod +x "$HOME/.local/bin/$APP_CMD.AppImage"
     
     # Download app icon for proper menu integration
     log "Downloading app icon..."
-    curl -fsSL -o "$HOME/.local/share/icons/hicolor/128x128/apps/win11-clipboard-history.png" \
+    curl -fsSL -o "$HOME/.local/share/icons/hicolor/128x128/apps/$APP_ID.png" \
         "https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/master/src-tauri/icons/128x128.png" 2>/dev/null || true
     
     # Wrapper script — mirrors src-tauri/bundle/linux/wrapper.sh sanitization
-    cat > "$HOME/.local/bin/win11-clipboard-history" << 'WRAPPER_EOF'
+    cat > "$HOME/.local/bin/$APP_CMD" << 'WRAPPER_EOF'
 #!/bin/bash
-# AppImage wrapper for win11-clipboard-history
+# AppImage wrapper for Win11Clip
 # Sanitizes Snap/Flatpak environment leaks, then launches the AppImage.
 
 # Always clear library/runtime overrides from sandbox parents
@@ -663,18 +785,18 @@ sanitize_xdg_data_dirs
 
 export NO_AT_BRIDGE=1
 
-exec "$HOME/.local/bin/win11-clipboard-history.AppImage" "$@"
+exec "$HOME/.local/bin/$APP_CMD.AppImage" "$@"
 WRAPPER_EOF
-    chmod +x "$HOME/.local/bin/win11-clipboard-history"
+    chmod +x "$HOME/.local/bin/$APP_CMD"
     
     # .desktop file with proper icon
-    cat > "$HOME/.local/share/applications/win11-clipboard-history.desktop" << EOF
+    cat > "$HOME/.local/share/applications/$APP_ID.desktop" << EOF
 [Desktop Entry]
 Type=Application
-Name=Clipboard History
+Name=$APP_DISPLAY_NAME
 Comment=Windows 11-style Clipboard History Manager
-Exec=$HOME/.local/bin/win11-clipboard-history
-Icon=win11-clipboard-history
+Exec=$HOME/.local/bin/$APP_CMD
+Icon=$APP_ID
 Terminal=false
 Categories=Utility;
 StartupWMClass=$APP_ID
@@ -726,7 +848,7 @@ setup_udev_appimage() {
     
     # Create udev rule
     sudo tee /etc/udev/rules.d/99-win11-clipboard-input.rules > /dev/null << 'EOF'
-# udev rules for Windows 11 Clipboard History
+# udev rules for Win11Clip
 ACTION=="add", SUBSYSTEM=="misc", KERNEL=="uinput", OPTIONS+="static_node=uinput"
 KERNEL=="uinput", SUBSYSTEM=="misc", MODE="0660", GROUP="input", TAG+="uaccess"
 EOF
@@ -892,8 +1014,8 @@ print_plan() {
         fi
     fi
     [ -f "$LEGACY_APT_LIST" ] && echo "  Will ask    : before removing $LEGACY_APT_LIST (old upstream apt source) and its key (default No, backed up first)"
-    if [ "$BUILD_FROM_SOURCE" = true ] && command -v dpkg >/dev/null 2>&1 && dpkg -s win11-clipboard-history >/dev/null 2>&1; then
-        echo "  Will ask    : before removing the installed apt package win11-clipboard-history $(dpkg-query -W -f='${Version}' win11-clipboard-history) (default No, backed up first)"
+    if [ "$(old_package_origin)" != none ]; then
+        echo "  Will ask    : before removing the installed apt package $OLD_PKG_NAME $(dpkg-query -W -f='${Version}' "$OLD_PKG_NAME") so that $PKG_NAME replaces it (default No, backed up first)"
     fi
     echo "  Extensions  : win11-clipboard-bridge, window-calls (patched) -> ~/.local/share/gnome-shell/extensions"
     local wc_dir="$HOME/.local/share/gnome-shell/extensions/window-calls@domandoman.xyz"
@@ -930,21 +1052,18 @@ print_plan() {
 launch_app() {
     log "Starting application..."
     
-    # Kill any existing instances (matches both wrapper and -bin binary)
-    killall -q win11-clipboard-history-bin 2>/dev/null || stop_app_by_name win11-clipboard-history-bin
-    killall -q win11-clipboard-history.AppImage 2>/dev/null || stop_app_by_name win11-clipboard-history.AppImage
+    # Kill any existing instances (the binary of either name, and the AppImage of either name)
+    killall -q "$OLD_BIN" "$APP_BIN" 2>/dev/null || stop_app_by_name "$OLD_BIN" "$APP_BIN"
+    killall -q "$OLD_CMD.AppImage" "$APP_CMD.AppImage" 2>/dev/null || stop_app_by_name "$OLD_CMD.AppImage" "$APP_CMD.AppImage"
     sleep 1
     
     # Launch detached from terminal
-    nohup win11-clipboard-history >/dev/null 2>&1 < /dev/null & disown
+    nohup "$APP_CMD" >/dev/null 2>&1 < /dev/null & disown
     
     sleep 2
     
-    if command -v pgrep >/dev/null 2>&1; then
-        pgrep -f "win11-clipboard-history" >/dev/null 2>&1 || return 1
-    elif command -v ps >/dev/null 2>&1; then
-        ps aux | grep -v grep | grep -q "win11-clipboard-history" || return 1
-    fi
+    # Running means a process whose executable is exactly the binary (or the AppImage) of the new name
+    [ -n "$(app_pids "$APP_BIN" "$APP_CMD.AppImage")" ] || return 1
 
     return 0
 }
@@ -1187,12 +1306,13 @@ EOF
 
 install_uninstaller() {
     log "Installing uninstaller utility..."
+    local target="/usr/local/bin/$UNINSTALL_CMD"
     if [ -f "scripts/uninstall.sh" ]; then
-        sudo install -Dm755 scripts/uninstall.sh /usr/local/bin/win11-clipboard-uninstall
+        sudo install -Dm755 scripts/uninstall.sh "$target"
     elif [ -f "../scripts/uninstall.sh" ]; then
-        sudo install -Dm755 ../scripts/uninstall.sh /usr/local/bin/win11-clipboard-uninstall
+        sudo install -Dm755 ../scripts/uninstall.sh "$target"
     elif [ -f "uninstall.sh" ]; then
-        sudo install -Dm755 uninstall.sh /usr/local/bin/win11-clipboard-uninstall
+        sudo install -Dm755 uninstall.sh "$target"
     else
         local fetched=false
         local owners=("$REPO_OWNER" "harshp2008")
@@ -1200,7 +1320,7 @@ install_uninstaller() {
         for owner in "${owners[@]}"; do
             for repo in "${repos[@]}"; do
                 local UNINSTALL_URL="https://raw.githubusercontent.com/$owner/$repo/master/scripts/uninstall.sh"
-                if sudo curl -fsSL -o /usr/local/bin/win11-clipboard-uninstall "$UNINSTALL_URL" 2>/dev/null; then
+                if sudo curl -fsSL -o "$target" "$UNINSTALL_URL" 2>/dev/null; then
                     fetched=true
                     break 2
                 fi
@@ -1210,8 +1330,10 @@ install_uninstaller() {
             error "Failed to download uninstall.sh"
         fi
     fi
-    sudo chmod 755 /usr/local/bin/win11-clipboard-uninstall
-    success "Uninstaller installed to /usr/local/bin/win11-clipboard-uninstall"
+    sudo chmod 755 "$target"
+    success "Uninstaller installed to $target"
+    # The old command keeps working: it is a link to the new one.
+    sudo ln -sf "$UNINSTALL_CMD" "/usr/local/bin/$OLD_UNINSTALL_CMD"
 }
 
 install_window_calls() {
@@ -1433,8 +1555,8 @@ configure_gnome_shortcuts() {
 
     local sa_exe
     sa_exe=$(spawn_at_shortcut_exe)
-    local target_cb_cmd="$sa_exe spawn --anchor cursor -o -15 -15 -m 10 -c $APP_ID win11-clipboard-history --clipboard"
-    local target_emoji_cmd="$sa_exe spawn --anchor cursor -o -15 -15 -m 10 -c $APP_ID win11-clipboard-history --emoji"
+    local target_cb_cmd="$sa_exe spawn --anchor cursor -o -15 -15 -m 10 -c $APP_ID $APP_CMD --clipboard"
+    local target_emoji_cmd="$sa_exe spawn --anchor cursor -o -15 -15 -m 10 -c $APP_ID $APP_CMD --emoji"
 
     local raw_bindings
     raw_bindings=$(run_user_gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null || echo "[]")
@@ -1458,31 +1580,36 @@ configure_gnome_shortcuts() {
         cmd=$(echo "$cmd" | sed "s/^'//;s/'$//")
         bind=$(echo "$bind" | sed "s/^'//;s/'$//")
 
+        # An entry is ours when it runs the command of either name (the new one is also in the app id
+        # of every current shortcut), or sits at one of the paths this installer and the app use.
         if [[ "$p" == *"win11-clipboard-history-emoji"* ]] || [[ "$cmd" == *"--emoji"* ]] || [[ "$bind" == "<Super>period" ]]; then
-            run_user_gsettings set "$schema" name "'Win11Clip Emoji Picker'" 2>/dev/null || true
+            run_user_gsettings set "$schema" name "'$APP_DISPLAY_NAME Emoji Picker'" 2>/dev/null || true
             run_user_gsettings set "$schema" command "'$target_emoji_cmd'" 2>/dev/null || true
             run_user_gsettings set "$schema" binding "'<Super>period'" 2>/dev/null || true
             found_emoji=true
         elif [[ "$p" == *"win11-clipboard-history-alt"* ]] || [[ "$bind" == "<Ctrl><Alt>v" || "$bind" == "<Primary><Alt>v" ]]; then
-            run_user_gsettings set "$schema" name "'Win11Clip Clipboard History (Alt)'" 2>/dev/null || true
+            run_user_gsettings set "$schema" name "'$APP_DISPLAY_NAME (Alt)'" 2>/dev/null || true
             run_user_gsettings set "$schema" command "'$target_cb_cmd'" 2>/dev/null || true
             run_user_gsettings set "$schema" binding "'<Ctrl><Alt>v'" 2>/dev/null || true
             found_alt=true
-        elif [[ "$cmd" == *"win11-clipboard-history"* ]] || [[ "$bind" == "<Super>v" ]] || [[ "$p" == *"win11-clipboard-history"* ]]; then
-            run_user_gsettings set "$schema" name "'Win11Clip Clipboard History'" 2>/dev/null || true
+        elif [[ "$cmd" == *"$OLD_CMD"* ]] || [[ "$cmd" == *"$APP_CMD"* ]] || [[ "$bind" == "<Super>v" ]] || [[ "$p" == *"win11-clipboard-history"* ]]; then
+            run_user_gsettings set "$schema" name "'$APP_DISPLAY_NAME'" 2>/dev/null || true
             run_user_gsettings set "$schema" command "'$target_cb_cmd'" 2>/dev/null || true
             run_user_gsettings set "$schema" binding "'<Super>v'" 2>/dev/null || true
             found_cb=true
         fi
     done
 
+    # The keys GNOME stores the three shortcuts under. They are not shown anywhere and keep the names
+    # they had before the rename (the app uses the same ones, see SHORTCUTS in shortcut_manager.rs), so
+    # an entry from an earlier install is overwritten in place instead of being left next to a new one.
     local default_cb_path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/win11-clipboard-history/"
     local default_alt_path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/win11-clipboard-history-alt/"
     local default_emoji_path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/win11-clipboard-history-emoji/"
 
     if [ "$found_cb" = false ]; then
         local schema="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$default_cb_path"
-        run_user_gsettings set "$schema" name "'Win11Clip Clipboard History'" 2>/dev/null || true
+        run_user_gsettings set "$schema" name "'$APP_DISPLAY_NAME'" 2>/dev/null || true
         run_user_gsettings set "$schema" command "'$target_cb_cmd'" 2>/dev/null || true
         run_user_gsettings set "$schema" binding "'<Super>v'" 2>/dev/null || true
         if [[ ! " ${paths[*]} " =~ " $default_cb_path " ]]; then
@@ -1492,7 +1619,7 @@ configure_gnome_shortcuts() {
 
     if [ "$found_alt" = false ]; then
         local schema="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$default_alt_path"
-        run_user_gsettings set "$schema" name "'Win11Clip Clipboard History (Alt)'" 2>/dev/null || true
+        run_user_gsettings set "$schema" name "'$APP_DISPLAY_NAME (Alt)'" 2>/dev/null || true
         run_user_gsettings set "$schema" command "'$target_cb_cmd'" 2>/dev/null || true
         run_user_gsettings set "$schema" binding "'<Ctrl><Alt>v'" 2>/dev/null || true
         if [[ ! " ${paths[*]} " =~ " $default_alt_path " ]]; then
@@ -1502,7 +1629,7 @@ configure_gnome_shortcuts() {
 
     if [ "$found_emoji" = false ]; then
         local schema="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$default_emoji_path"
-        run_user_gsettings set "$schema" name "'Win11Clip Emoji Picker'" 2>/dev/null || true
+        run_user_gsettings set "$schema" name "'$APP_DISPLAY_NAME Emoji Picker'" 2>/dev/null || true
         run_user_gsettings set "$schema" command "'$target_emoji_cmd'" 2>/dev/null || true
         run_user_gsettings set "$schema" binding "'<Super>period'" 2>/dev/null || true
         if [[ ! " ${paths[*]} " =~ " $default_emoji_path " ]]; then
@@ -1595,13 +1722,13 @@ log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 notify() { # urgency title body
     log "[$1] $2 - $3"
     if [ "$CHECK_ONLY" = 1 ]; then echo "NOTIFY[$1] $2 - $3"; return; fi
-    command -v notify-send >/dev/null 2>&1 && notify-send -u "$1" -a "Clipboard History" -i win11-clipboard-history "$2" "$3"
+    command -v notify-send >/dev/null 2>&1 && notify-send -u "$1" -a "Win11Clip" -i io.github.harshp2008.win11clip "$2" "$3"
 }
 
 if [ "$CHECK_ONLY" = 0 ]; then
     sleep 3
     for u in $UUIDS; do gnome-extensions enable "$u" >/dev/null 2>&1; done
-    (win11-clipboard-history >/dev/null 2>&1 &)
+    (win11clip >/dev/null 2>&1 &)
     # spawn-at's own login update (10 s after login) and the app's startup update may rewrite the
     # spawn-at extension after the Shell has loaded it; judge only once they are done (at most ~70 s).
     sleep 12
@@ -1640,12 +1767,12 @@ elif [ "$proto" -lt "$SPAWN_AT_MIN_PROTOCOL" ]; then
 fi
 
 if [ -z "$problems" ]; then
-    notify normal "Clipboard History is ready" "All GNOME extensions are loaded. Press Super+V to open it."
+    notify normal "Win11Clip is ready" "All GNOME extensions are loaded. Press Super+V to open it."
     [ "$CHECK_ONLY" = 0 ] && rm -f "$HOOK" "$TRIES"
 else
     n=$(cat "$TRIES" 2>/dev/null || echo 0); n=$((n + 1))
     [ "$CHECK_ONLY" = 0 ] && echo "$n" > "$TRIES"
-    notify critical "Clipboard History: log out and back in once more" "GNOME has not loaded everything yet:$problems
+    notify critical "Win11Clip: log out and back in once more" "GNOME has not loaded everything yet:$problems
 Log out and back in once more, then press Super+V. Details: $LOG"
     [ "$CHECK_ONLY" = 0 ] && [ "$n" -ge 3 ] && rm -f "$HOOK" "$TRIES" && log "Giving up the first-login check after $n tries."
 fi
@@ -1724,7 +1851,7 @@ main() {
 
     echo ""
     echo "╔═══════════════════════════════════════════════════════════╗"
-    echo "║     Win11 Clipboard History - Linux Installer             ║"
+    echo "║     Win11Clip - Linux Installer                           ║"
     echo "╚═══════════════════════════════════════════════════════════╝"
     echo ""
     
@@ -1740,6 +1867,8 @@ main() {
         print_plan
         exit 0
     fi
+
+    import_old_manifest
 
     # Stop before anything is changed (an existing AppImage install is cleaned up further down).
     if [ "$BUILD_FROM_SOURCE" != true ] && [[ "$SYSTEM_FAMILY_INFO" =~ arch ]]; then
@@ -1784,6 +1913,9 @@ main() {
         install_appimage || build_from_source
     fi
     
+    # The files of the old name that no package owns (the launcher and menu entry of a source build)
+    remove_old_name_files
+
     # Install spawn-at utility globally
     install_spawn_at
     
