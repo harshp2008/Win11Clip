@@ -19,10 +19,9 @@ use win11clip_lib::config_manager::{resolve_window_position, ConfigManager};
 use win11clip_lib::emoji_manager::{EmojiManager, EmojiUsage};
 use win11clip_lib::focus_manager::x11_robust_activate;
 use win11clip_lib::focus_manager::{
-    restore_focused_window, save_focused_window,
-    wayland_activate_window_id, wayland_clear_saved_window_id, wayland_get_saved_window_id,
-    wayland_get_clipboard_window_id, wayland_save_focused_window_id,
-    wayland_set_keep_above, gnome_extension_force_pin,
+    gnome_extension_force_pin, restore_focused_window, save_focused_window,
+    wayland_activate_window_id, wayland_clear_saved_window_id, wayland_get_clipboard_window_id,
+    wayland_get_saved_window_id, wayland_save_focused_window_id, wayland_set_keep_above,
 };
 use win11clip_lib::input_simulator::simulate_paste_keystroke;
 use win11clip_lib::permission_checker;
@@ -268,7 +267,12 @@ fn is_theme_listener_active() -> bool {
 }
 
 #[tauri::command]
-async fn paste_item(app: AppHandle, state: State<'_, AppState>, id: String, shift_held: Option<bool>) -> Result<(), String> {
+async fn paste_item(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    shift_held: Option<bool>,
+) -> Result<(), String> {
     let _paste_guard = state.paste_gate.lock().await;
 
     // 1. Get Item (Scope lock tightly)
@@ -282,14 +286,23 @@ async fn paste_item(app: AppHandle, state: State<'_, AppState>, id: String, shif
             // 1. Write cleanly to in-memory clipboard
             {
                 let mut manager = state.clipboard_manager.lock();
-                manager.prepare_item_for_paste(&item).map_err(|e| e.to_string())?;
+                manager
+                    .prepare_item_for_paste(&item)
+                    .map_err(|e| e.to_string())?;
                 // Notify frontend of history change (item moved to top)
                 let history = manager.get_history();
                 let _ = app.emit("history-sync", &history);
             }
 
-            let is_text = matches!(item.content, ClipboardContent::Text(_) | ClipboardContent::RichText { .. });
-            let effective_shift = if is_text { shift_held.unwrap_or(false) } else { false };
+            let is_text = matches!(
+                item.content,
+                ClipboardContent::Text(_) | ClipboardContent::RichText { .. }
+            );
+            let effective_shift = if is_text {
+                shift_held.unwrap_or(false)
+            } else {
+                false
+            };
 
             PasteHelper::execute_paste_pipeline(&app, effective_shift).await?;
         }
@@ -414,8 +427,7 @@ async fn finish_setup(app: AppHandle) -> Result<(), String> {
     win11clip_lib::adaptive_dock::register_bypass_if_applicable();
 
     // 1. Mark first run as complete (redundant but safe)
-    win11clip_lib::permission_checker::mark_first_run_complete()
-        .map_err(|e| e.to_string())?;
+    win11clip_lib::permission_checker::mark_first_run_complete().map_err(|e| e.to_string())?;
 
     // 2. Close setup window
     if let Some(setup_window) = app.get_webview_window("setup") {
@@ -447,7 +459,6 @@ async fn finish_setup(app: AppHandle) -> Result<(), String> {
 struct PasteHelper;
 
 impl PasteHelper {
-
     async fn execute_paste_pipeline(app: &AppHandle, shift_held: bool) -> Result<(), String> {
         // 2. Hide window completely
         WindowController::hide(app);
@@ -661,8 +672,8 @@ impl WindowController {
             );
             let _ = window.show();
             let _ = window.set_always_on_top(true); // compositor hint (best-effort)
-            // On Wayland, avoid window.set_focus() as it triggers Mutter's Focus Stealing Prevention toast.
-            // The GTK Utility hint, set_keep_above, gtk_window.present(), and window.show() present the window on top cleanly.
+                                                    // On Wayland, avoid window.set_focus() as it triggers Mutter's Focus Stealing Prevention toast.
+                                                    // The GTK Utility hint, set_keep_above, gtk_window.present(), and window.show() present the window on top cleanly.
 
             #[cfg(target_os = "linux")]
             if is_wayland_session {
@@ -981,8 +992,7 @@ fn start_clipboard_watcher(app: AppHandle, clipboard_manager: Arc<Mutex<Clipboar
             // Text
             if let Ok(text) = manager.get_current_text() {
                 if !text.is_empty() {
-                    let text_hash =
-                        win11clip_lib::clipboard_manager::calculate_hash(&text);
+                    let text_hash = win11clip_lib::clipboard_manager::calculate_hash(&text);
 
                     if Some(text_hash) != last_text_hash {
                         last_text_hash = Some(text_hash);

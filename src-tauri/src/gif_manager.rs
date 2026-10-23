@@ -110,10 +110,13 @@ impl ClipboardHandler {
         let uri = Self::make_file_uri(path);
         let uri_trimmed = uri.trim();
 
-        eprintln!("[GifManager] Setting in-memory clipboard text/URI to {}", uri_trimmed);
+        eprintln!(
+            "[GifManager] Setting in-memory clipboard text/URI to {}",
+            uri_trimmed
+        );
 
-        let mut clipboard = Clipboard::new()
-            .map_err(|e| format!("Failed to initialize clipboard: {}", e))?;
+        let mut clipboard =
+            Clipboard::new().map_err(|e| format!("Failed to initialize clipboard: {}", e))?;
 
         clipboard
             .set_text(uri_trimmed)
@@ -122,7 +125,10 @@ impl ClipboardHandler {
         #[cfg(target_os = "linux")]
         {
             use arboard::{LinuxClipboardKind, SetExtLinux};
-            let _ = clipboard.set().clipboard(LinuxClipboardKind::Primary).text(uri_trimmed);
+            let _ = clipboard
+                .set()
+                .clipboard(LinuxClipboardKind::Primary)
+                .text(uri_trimmed);
         }
 
         Ok(())

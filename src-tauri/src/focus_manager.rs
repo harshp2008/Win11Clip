@@ -479,9 +479,7 @@ pub fn wayland_save_focused_window_id() {
             }
 
             // Prefer the window that currently has focus.
-            let target = windows
-                .iter()
-                .find(|w| w.focus && !w.is_clipboard());
+            let target = windows.iter().find(|w| w.focus && !w.is_clipboard());
 
             if let Some(win) = target {
                 wayland_push_focus_history(win.id, win.wm_class.clone());
@@ -528,8 +526,6 @@ pub fn wayland_get_saved_window_id() -> u64 {
     history.front().map(|(id, _)| *id).unwrap_or(0)
 }
 
-
-
 /// Activate (focus) a window by its `window-calls` integer ID.
 pub fn wayland_activate_window_id(winid: u64) -> Result<(), String> {
     wc_call_winid("Activate", winid)
@@ -555,7 +551,7 @@ pub fn wayland_set_keep_above(winid: u64, above: bool) -> Result<(), String> {
 /// Invokes the custom GNOME Shell extension's SetAlwaysOnTop method.
 pub fn gnome_extension_set_keep_above(_winid: u64, above: bool) -> Result<(), String> {
     let method = "org.gnome.Shell.Extensions.Windows11ClipboardBridge.SetAlwaysOnTop";
-    
+
     let output = std::process::Command::new("gdbus")
         .args([
             "call",
@@ -579,14 +575,17 @@ pub fn gnome_extension_set_keep_above(_winid: u64, above: bool) -> Result<(), St
         ));
     }
 
-    eprintln!("[FocusManager] GNOME extension SetAlwaysOnTop above={}", above);
+    eprintln!(
+        "[FocusManager] GNOME extension SetAlwaysOnTop above={}",
+        above
+    );
     Ok(())
 }
 
 /// Invokes the custom GNOME Shell extension's ForcePin method.
 pub fn gnome_extension_force_pin() -> Result<(), String> {
     let method = "org.gnome.Shell.Extensions.Windows11ClipboardBridge.ForcePin";
-    
+
     let output = std::process::Command::new("gdbus")
         .args([
             "call",
@@ -645,14 +644,16 @@ pub fn wayland_snap_to_cursor(cb_id: u64) {
         let raw_coords = String::from_utf8_lossy(&output.stdout);
         let parts: Vec<&str> = raw_coords.split(',').collect();
         if parts.len() >= 2 {
-            let x = parts[0]
-                .split_whitespace()
-                .last()
-                .and_then(|p| p.trim_matches(|c: char| !c.is_numeric()).parse::<i32>().ok());
-            let y = parts[1]
-                .split_whitespace()
-                .last()
-                .and_then(|p| p.trim_matches(|c: char| !c.is_numeric()).parse::<i32>().ok());
+            let x = parts[0].split_whitespace().last().and_then(|p| {
+                p.trim_matches(|c: char| !c.is_numeric())
+                    .parse::<i32>()
+                    .ok()
+            });
+            let y = parts[1].split_whitespace().last().and_then(|p| {
+                p.trim_matches(|c: char| !c.is_numeric())
+                    .parse::<i32>()
+                    .ok()
+            });
 
             if let (Some(x_val), Some(y_val)) = (x, y) {
                 let _ = std::process::Command::new("gdbus")

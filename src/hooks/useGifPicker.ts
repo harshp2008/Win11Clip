@@ -25,36 +25,45 @@ export function useGifPicker() {
   // Track if component is mounted
   const isMountedRef = useRef(true)
 
-  // Fetch GIFs (trending or search)
-  const fetchGifs = useCallback(async (query: string) => {
-    setIsLoading(true)
-    setError(null)
+  // Load GIFs (trending or search). State is only set from the promise callbacks.
+  // isLoading starts as true and error as null, so the initial load can use this directly.
+  const loadGifs = useCallback((query: string) => {
+    const request = query.trim() ? searchGifs(query, GIF_LIMIT) : fetchTrendingGifs(GIF_LIMIT)
 
-    try {
-      const results = query.trim()
-        ? await searchGifs(query, GIF_LIMIT)
-        : await fetchTrendingGifs(GIF_LIMIT)
-
-      if (isMountedRef.current) {
-        setGifs(results)
-      }
-    } catch (err) {
-      console.error('Failed to fetch GIFs:', err)
-      if (isMountedRef.current) {
-        setError(err instanceof Error ? err.message : 'Failed to load GIFs')
-        setGifs([])
-      }
-    } finally {
-      if (isMountedRef.current) {
-        setIsLoading(false)
-      }
-    }
+    return request
+      .then((results) => {
+        if (isMountedRef.current) {
+          setGifs(results)
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to fetch GIFs:', err)
+        if (isMountedRef.current) {
+          setError(err instanceof Error ? err.message : 'Failed to load GIFs')
+          setGifs([])
+        }
+      })
+      .finally(() => {
+        if (isMountedRef.current) {
+          setIsLoading(false)
+        }
+      })
   }, [])
+
+  // Fetch GIFs (trending or search), showing the loading state while it runs
+  const fetchGifs = useCallback(
+    async (query: string) => {
+      setIsLoading(true)
+      setError(null)
+      await loadGifs(query)
+    },
+    [loadGifs]
+  )
 
   // Load trending GIFs on mount
   useEffect(() => {
     isMountedRef.current = true
-    fetchGifs('')
+    loadGifs('')
 
     return () => {
       isMountedRef.current = false
@@ -62,7 +71,7 @@ export function useGifPicker() {
         clearTimeout(debounceTimerRef.current)
       }
     }
-  }, [fetchGifs])
+  }, [loadGifs])
 
   // Debounced search handler
   const handleSearchChange = useCallback(

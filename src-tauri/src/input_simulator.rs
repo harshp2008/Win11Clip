@@ -7,8 +7,6 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-
-
 enum PasteFailure {
     /// No paste key was attempted, so another backend may safely run.
     Retryable(String),
@@ -134,7 +132,10 @@ type PasteStrategy = (&'static str, fn(bool) -> Result<(), PasteFailure>);
 pub fn simulate_paste_keystroke(shift_held: bool) -> Result<(), String> {
     let is_terminal = shift_held;
 
-    eprintln!("[SimulatePaste] Sending Paste (is_terminal={})...", is_terminal);
+    eprintln!(
+        "[SimulatePaste] Sending Paste (is_terminal={})...",
+        is_terminal
+    );
 
     // XTest uses one native X11 connection and verifies that Ctrl is down
     // before V. uinput provides a direct kernel-level virtual keyboard.
@@ -171,12 +172,9 @@ pub fn simulate_paste_keystroke(shift_held: bool) -> Result<(), String> {
     Err("All paste methods failed".to_string())
 }
 
-
 // =============================================================================
 // X11 / XTest
 // =============================================================================
-
-
 
 fn fake_key<C: x11rb::connection::Connection + x11rb::protocol::xtest::ConnectionExt>(
     conn: &C,
@@ -268,7 +266,7 @@ impl XtestDevice {
 
     fn send_paste(&mut self, is_terminal: bool) -> Result<(), PasteFailure> {
         let mut guard = XtestKeyGuard::new(&self.connection, self.root_window);
-        
+
         let operation = (|| {
             guard.press(self.ctrl_keycode, false, "Failed to press Ctrl")?;
             wait_for_x11_key_state(&self.connection, self.ctrl_keycode, true)?;
@@ -589,7 +587,9 @@ fn simulate_paste_uinput(is_terminal: bool) -> Result<(), PasteFailure> {
     }
 
     let mut created = UinputDevice::create().map_err(PasteFailure::Retryable)?;
-    created.send_paste(is_terminal).map_err(PasteFailure::Ambiguous)?;
+    created
+        .send_paste(is_terminal)
+        .map_err(PasteFailure::Ambiguous)?;
     *device = Some(created);
     Ok(())
 }
