@@ -3,7 +3,7 @@
 # the old name win11-clipboard-history, which is also the name of the upstream project's package
 # (gustavosett); the AUR package win11-clipboard-history-bin is upstream's and is not this one.
 pkgname=win11clip
-pkgver=0.7.5
+pkgver=0.7.6
 pkgrel=1
 pkgdesc="Windows 11-style Clipboard History Manager for Linux"
 arch=('x86_64' 'aarch64')
