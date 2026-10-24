@@ -12,8 +12,19 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  check-notes:
+    name: Check release notes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Require release notes for this tag
+        run: scripts/check-release-notes.sh "${GITHUB_REF_NAME}"
+
   build:
     name: Build (${{ matrix.arch }})
+    needs: check-notes
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -113,6 +124,95 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f | head -50
 
+      - name: Build release body (release notes, then install instructions)
+        run: |
+          VERSION=${{ steps.get_version.outputs.VERSION }}
+          cp "docs/release-notes/$VERSION.md" release-body.md
+          printf '\n---\n\n' >> release-body.md
+          cat >> release-body.md << 'INSTALL_EOF'
+          <div align="center">
+
+          <img width="128" height="128" alt="logo" src="https://github.com/user-attachments/assets/4534e915-5d83-45f3-9f09-48a0f94b1d9a" />
+
+          # Win11Clip ${{ github.ref_name }}
+
+          ## 🚀 Quick Installation (Recommended)
+
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/harshp2008/Win11Clip/master/scripts/install.sh | bash
+          ```
+
+          This script auto-detects your distro and architecture, then sets up everything including paste permissions.
+
+          </div>
+
+          ---
+
+          ### 📦 Manual Installation
+
+          <details>
+          <summary>Ubuntu/Debian (.deb)</summary>
+
+          Download the `.deb` from this release (amd64 for x86_64, arm64 for ARM64):
+          ```bash
+          sudo apt install ./win11clip_${{ steps.get_version.outputs.VERSION }}_amd64.deb
+          sudo setfacl -m u:$USER:rw /dev/uinput
+          ```
+          </details>
+
+          <details>
+          <summary>Fedora/RHEL (.rpm)</summary>
+
+          Download the `.rpm` from this release (x86_64 for Intel/AMD, aarch64 for ARM64):
+          ```bash
+          sudo dnf install ./win11clip-${{ steps.get_version.outputs.VERSION }}-1.x86_64.rpm
+          sudo setfacl -m u:$USER:rw /dev/uinput
+          ```
+          </details>
+
+          <details>
+          <summary>Arch Linux</summary>
+
+          The installer does not support Arch yet. The AUR package `win11-clipboard-history-bin` is the upstream project's, not this project's (this project's package is `win11clip`, see `aur/PKGBUILD`), and does not contain this project's fixes, so it is not recommended here. Use the AppImage below (some features are disabled) or build from source (see the [README](https://github.com/harshp2008/Win11Clip#readme)).
+          </details>
+
+          <details>
+          <summary>AppImage (Universal - any distro)</summary>
+
+          > ## Some features are disabled; we strongly recommend the complete installation.
+          ```bash
+          # Download the correct AppImage for your architecture
+          chmod +x win11clip_${{ steps.get_version.outputs.VERSION }}_amd64.AppImage
+          sudo setfacl -m u:$USER:rw /dev/uinput  # Required for paste simulation
+          ./win11clip_${{ steps.get_version.outputs.VERSION }}_amd64.AppImage
+          ```
+          then register the command that you want in your system to open the AppImage
+          ```
+          KEYBOARD SETTINGS -> SHORTCUTS -> NEW SHORTCUT -> Super+V -> ./my_awesome_folder/win11clip_${{ steps.get_version.outputs.VERSION }}_amd64.AppImage
+          ```
+
+          > **Note:** The `setfacl` command is temporary (resets on reboot). For permanent setup, see the [README](https://github.com/harshp2008/Win11Clip#readme).
+          </details>
+
+          <details>
+          <summary>GNOME: spawn-at, and logging out after a manual install</summary>
+
+          The packages above install the app only. On GNOME the popup is placed at your cursor by [spawn-at](https://github.com/harshp2008/spawn-at), **version 0.2.4 or newer**, together with its GNOME Shell extension and the two companion extensions (`win11-clipboard-bridge`, `window-calls`). The Quick Installation script sets all of them up. If you installed by hand, install spawn-at yourself and check its version:
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/harshp2008/spawn-at/main/install.sh | bash
+          spawn-at -V   # must print spawn-at 0.2.4 or newer
+          ```
+          **On Wayland, a newly installed or updated GNOME extension only loads after you log out and back in.** Do that once after installing or updating spawn-at or any of these extensions. With the Quick Installation script, a one-time check runs about 20 seconds after you log in and shows a notification: either "Win11Clip is ready", or which extension did not load (details in `~/.local/state/win11clip-installer/firstrun.log`). A manual install has no such check; see the [README](https://github.com/harshp2008/Win11Clip#-troubleshooting) to look at the extensions yourself.
+          </details>
+
+          ---
+
+          ### ⌨️ Usage
+
+          Press **Super+V** to open the clipboard history. The app will show a Setup Wizard on first run to configure shortcuts and permissions.
+          INSTALL_EOF
+          cat release-body.md
+
       - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v3
         if: startsWith(github.ref, 'refs/tags/')
@@ -126,87 +226,7 @@ jobs:
             artifacts/**/*.deb
             artifacts/**/*.AppImage
             artifacts/**/*.rpm
-          body: |
-            <div align="center">
-
-            <img width="128" height="128" alt="logo" src="https://github.com/user-attachments/assets/4534e915-5d83-45f3-9f09-48a0f94b1d9a" />
-
-            # Win11Clip ${{ github.ref_name }}
-
-            ## 🚀 Quick Installation (Recommended)
-
-            ```bash
-            curl -fsSL https://raw.githubusercontent.com/harshp2008/Win11Clip/master/scripts/install.sh | bash
-            ```
-
-            This script auto-detects your distro and architecture, then sets up everything including paste permissions.
-
-            </div>
-
-            ---
-
-            ### 📦 Manual Installation
-
-            <details>
-            <summary>Ubuntu/Debian (.deb)</summary>
-
-            Download the `.deb` from this release (amd64 for x86_64, arm64 for ARM64):
-            ```bash
-            sudo apt install ./win11clip_${{ steps.get_version.outputs.VERSION }}_amd64.deb
-            sudo setfacl -m u:$USER:rw /dev/uinput
-            ```
-            </details>
-
-            <details>
-            <summary>Fedora/RHEL (.rpm)</summary>
-
-            Download the `.rpm` from this release (x86_64 for Intel/AMD, aarch64 for ARM64):
-            ```bash
-            sudo dnf install ./win11clip-${{ steps.get_version.outputs.VERSION }}-1.x86_64.rpm
-            sudo setfacl -m u:$USER:rw /dev/uinput
-            ```
-            </details>
-
-            <details>
-            <summary>Arch Linux</summary>
-
-            The installer does not support Arch yet. The AUR package `win11-clipboard-history-bin` is the upstream project's, not this project's (this project's package is `win11clip`, see `aur/PKGBUILD`), and does not contain this project's fixes, so it is not recommended here. Use the AppImage below (some features are disabled) or build from source (see the [README](https://github.com/harshp2008/Win11Clip#readme)).
-            </details>
-
-            <details>
-            <summary>AppImage (Universal - any distro)</summary>
-
-            > ## Some features are disabled; we strongly recommend the complete installation.
-            ```bash
-            # Download the correct AppImage for your architecture
-            chmod +x win11clip_${{ steps.get_version.outputs.VERSION }}_amd64.AppImage
-            sudo setfacl -m u:$USER:rw /dev/uinput  # Required for paste simulation
-            ./win11clip_${{ steps.get_version.outputs.VERSION }}_amd64.AppImage
-            ```
-            then register the command that you want in your system to open the AppImage
-            ```
-            KEYBOARD SETTINGS -> SHORTCUTS -> NEW SHORTCUT -> Super+V -> ./my_awesome_folder/win11clip_${{ steps.get_version.outputs.VERSION }}_amd64.AppImage
-            ```
-
-            > **Note:** The `setfacl` command is temporary (resets on reboot). For permanent setup, see the [README](https://github.com/harshp2008/Win11Clip#readme).
-            </details>
-
-            <details>
-            <summary>GNOME: spawn-at, and logging out after a manual install</summary>
-
-            The packages above install the app only. On GNOME the popup is placed at your cursor by [spawn-at](https://github.com/harshp2008/spawn-at), **version 0.2.4 or newer**, together with its GNOME Shell extension and the two companion extensions (`win11-clipboard-bridge`, `window-calls`). The Quick Installation script sets all of them up. If you installed by hand, install spawn-at yourself and check its version:
-            ```bash
-            curl -fsSL https://raw.githubusercontent.com/harshp2008/spawn-at/main/install.sh | bash
-            spawn-at -V   # must print spawn-at 0.2.4 or newer
-            ```
-            **On Wayland, a newly installed or updated GNOME extension only loads after you log out and back in.** Do that once after installing or updating spawn-at or any of these extensions. With the Quick Installation script, a one-time check runs about 20 seconds after you log in and shows a notification: either "Win11Clip is ready", or which extension did not load (details in `~/.local/state/win11clip-installer/firstrun.log`). A manual install has no such check; see the [README](https://github.com/harshp2008/Win11Clip#-troubleshooting) to look at the extensions yourself.
-            </details>
-
-            ---
-
-            ### ⌨️ Usage
-
-            Press **Super+V** to open the clipboard history. The app will show a Setup Wizard on first run to configure shortcuts and permissions.
+          body_path: release-body.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

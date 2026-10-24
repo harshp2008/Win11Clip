@@ -152,6 +152,8 @@ curl -fsSL https://raw.githubusercontent.com/harshp2008/Win11Clip/master/scripts
 
 Pre-compiled packages for each release are available on the [Releases](https://github.com/harshp2008/Win11Clip/releases) page.
 
+What changed in each release is written up in [docs/release-notes/](docs/release-notes/index.md).
+
 ### Debian / Ubuntu (.deb)
 ```bash
 sudo dpkg -i win11clip_*.deb
