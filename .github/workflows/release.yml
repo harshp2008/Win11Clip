@@ -149,8 +149,9 @@ jobs:
   release:
     name: Create Release
     needs: build
-    # Publishing happens only for a pushed tag, never for a manual dispatch.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    # Runs for a pushed tag, and for a manual dry run so the release body can be
+    # inspected. Every step that publishes has its own tag-push condition below.
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -160,7 +161,9 @@ jobs:
 
       - name: Get version from tag
         id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: echo "VERSION=$(scripts/resolve-release-version.sh "$GITHUB_EVENT_NAME" "$GITHUB_REF" "$INPUT_VERSION")" >> $GITHUB_OUTPUT
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8
@@ -259,6 +262,15 @@ jobs:
           Press **Super+V** to open the clipboard history. The app will show a Setup Wizard on first run to configure shortcuts and permissions.
           INSTALL_EOF
           cat release-body.md
+
+      - name: Upload dry-run release body
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: dry-run-release-body
+          path: release-body.md
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v3
