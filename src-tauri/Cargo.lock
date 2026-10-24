@@ -5831,7 +5831,7 @@ dependencies = [
 
 [[package]]
 name = "win11clip"
-version = "0.7.5"
+version = "0.7.6"
 dependencies = [
  "arboard",
  "base64 0.23.1",

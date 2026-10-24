@@ -1,6 +1,6 @@
 [package]
 name = "win11clip"
-version = "0.7.5"
+version = "0.7.6"
 description = "A Windows 11-style Clipboard History Manager for Linux"
 authors = ["harshp2008"]
 license = "MIT"
