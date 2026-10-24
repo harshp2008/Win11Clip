@@ -10,10 +10,40 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Decide whether the change touches anything the Linux build depends on.
+  # Lint and Security Audit do not use this; they always run.
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Classify changed files
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          # Only pull requests can be docs-only. Pushes always build. A
+          # pull_request checkout is a merge commit, so HEAD^1 is the base and
+          # the diff is exactly what the PR changes (renames listed as both paths).
+          if [ "$EVENT_NAME" != "pull_request" ] || ! git rev-parse --verify -q 'HEAD^2' > /dev/null; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --name-only --no-renames 'HEAD^1' HEAD | tee /dev/stderr \
+            | scripts/ci-classify-changes.sh >> "$GITHUB_OUTPUT"
+
   # Lint and format check
   lint:
     name: Lint & Format
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -38,14 +68,12 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             src-tauri/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-lint-
 
       - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libssl-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
-            libgtk-3-dev libglib2.0-dev
+        timeout-minutes: 10
+        run: scripts/ci-install-deps.sh
 
       - name: Install npm dependencies
         run: npm ci
@@ -62,11 +90,13 @@ jobs:
       - name: Run Clippy
         run: cd src-tauri && cargo clippy -- -D warnings
 
-  # Build for Linux
+  # Build for Linux. Skipped when a pull request only changes documentation.
   build-linux:
     name: Build Linux
     runs-on: ubuntu-latest
-    needs: lint
+    timeout-minutes: 25
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -80,6 +110,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # Own key, so the release build is not shadowed by the lint job's debug
+      # build. The bundle output is left out so stale packages are never
+      # restored next to the new ones and uploaded.
       - name: Cache Cargo
         uses: actions/cache@v6
         with:
@@ -89,14 +122,13 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             src-tauri/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            !src-tauri/target/release/bundle/
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-build-
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libssl-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
-            libgtk-3-dev libglib2.0-dev
+        timeout-minutes: 10
+        run: scripts/ci-install-deps.sh
 
       - name: Install npm dependencies
         run: npm ci
@@ -118,6 +150,7 @@ jobs:
   security:
     name: Security Audit
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -125,7 +158,22 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # Compiling cargo-audit took about 160 s per run. The cached binary is
+      # refreshed weekly so it still tracks the latest cargo-audit; the
+      # advisory database is fetched fresh on every run either way.
+      - name: Get cargo-audit cache week
+        id: audit_week
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache cargo-audit
+        id: audit_cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: ${{ runner.os }}-cargo-audit-${{ steps.audit_week.outputs.week }}
+
       - name: Install cargo-audit
+        if: steps.audit_cache.outputs.cache-hit != 'true'
         run: cargo install cargo-audit
 
       - name: Run security audit

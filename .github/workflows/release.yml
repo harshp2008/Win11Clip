@@ -4,9 +4,23 @@ on:
   push:
     tags:
       - "v*"
+  # Manual dry run: runs the notes check and the full build against the chosen
+  # ref and uploads the packages as a short-lived workflow artifact. It never
+  # creates a release or touches the AUR; those steps run only for a tag push.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (builds only, never publishes). Must stay on."
+        type: boolean
+        default: true
+      version:
+        description: "Version whose release notes to check (empty = version in package.json)"
+        type: string
+        default: ""
 
+# Read-only by default; only the publishing job below gets contents: write.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,8 +33,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      - name: Refuse a non-dry-run dispatch
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run != true
+        run: |
+          echo "::error::Manual runs are dry runs only. A real release comes from pushing a v* tag."
+          exit 1
+
+      - name: Resolve version to check
+        id: get_version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: echo "VERSION=$(scripts/resolve-release-version.sh "$GITHUB_EVENT_NAME" "$GITHUB_REF" "$INPUT_VERSION")" >> "$GITHUB_OUTPUT"
+
       - name: Require release notes for this tag
-        run: scripts/check-release-notes.sh "${GITHUB_REF_NAME}"
+        env:
+          VERSION: ${{ steps.get_version.outputs.VERSION }}
+        run: scripts/check-release-notes.sh "$VERSION"
 
   build:
     name: Build (${{ matrix.arch }})
@@ -46,7 +74,9 @@ jobs:
 
       - name: Get version from tag
         id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: echo "VERSION=$(scripts/resolve-release-version.sh "$GITHUB_EVENT_NAME" "$GITHUB_REF" "$INPUT_VERSION")" >> $GITHUB_OUTPUT
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -94,6 +124,7 @@ jobs:
         run: npm run tauri:build
 
       - name: Upload build artifacts
+        if: github.event_name == 'push'
         uses: actions/upload-artifact@v7
         with:
           name: build-${{ matrix.arch }}
@@ -103,17 +134,36 @@ jobs:
             src-tauri/target/release/bundle/rpm/*.rpm
           retention-days: 1
 
+      - name: Upload dry-run artifacts
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: dry-run-${{ matrix.arch }}
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/rpm/*.rpm
+          if-no-files-found: error
+          retention-days: 3
+
   release:
     name: Create Release
     needs: build
+    # Runs for a pushed tag, and for a manual dry run so the release body can be
+    # inspected. Every step that publishes has its own tag-push condition below.
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
       - name: Get version from tag
         id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: echo "VERSION=$(scripts/resolve-release-version.sh "$GITHUB_EVENT_NAME" "$GITHUB_REF" "$INPUT_VERSION")" >> $GITHUB_OUTPUT
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8
@@ -213,9 +263,18 @@ jobs:
           INSTALL_EOF
           cat release-body.md
 
+      - name: Upload dry-run release body
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: dry-run-release-body
+          path: release-body.md
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v3
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
@@ -231,7 +290,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update AUR Package
-        if: ${{ !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'rc') && !contains(github.ref_name, 'dev') }}
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'rc') && !contains(github.ref_name, 'dev') }}
         continue-on-error: true
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
